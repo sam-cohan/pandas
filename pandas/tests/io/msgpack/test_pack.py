@@ -1,14 +1,15 @@
 # coding: utf-8
-from collections import OrderedDict
-from io import BytesIO
-import struct
 
 import pytest
 
-from pandas.io.msgpack import Packer, Unpacker, packb, unpackb
+import struct
+
+from pandas import compat
+from pandas.compat import u, OrderedDict
+from pandas.io.msgpack import packb, unpackb, Unpacker, Packer
 
 
-class TestPack:
+class TestPack(object):
 
     def check(self, data, use_list=False):
         re = unpackb(packb(data), use_list=use_list)
@@ -29,18 +30,24 @@ class TestPack:
             self.check(td)
 
     def testPackUnicode(self):
-        test_data = ["", "abcd", ["defgh"], "Русский текст", ]
+        test_data = [u(""), u("abcd"), [u("defgh")], u("Русский текст"), ]
         for td in test_data:
             re = unpackb(
                 packb(td, encoding='utf-8'), use_list=1, encoding='utf-8')
             assert re == td
             packer = Packer(encoding='utf-8')
             data = packer.pack(td)
-            re = Unpacker(BytesIO(data), encoding='utf-8', use_list=1).unpack()
+            re = Unpacker(
+                compat.BytesIO(data), encoding='utf-8', use_list=1).unpack()
             assert re == td
 
     def testPackUTF32(self):
-        test_data = ["", "abcd", ["defgh"], "Русский текст"]
+        test_data = [
+            compat.u(""),
+            compat.u("abcd"),
+            [compat.u("defgh")],
+            compat.u("Русский текст"),
+        ]
         for td in test_data:
             re = unpackb(
                 packb(td, encoding='utf-32'), use_list=1, encoding='utf-32')
@@ -58,27 +65,22 @@ class TestPack:
         assert re == "abcdef"
 
     def testStrictUnicodeUnpack(self):
-        msg = (r"'utf-*8' codec can't decode byte 0xed in position 3:"
-               " invalid continuation byte")
-        with pytest.raises(UnicodeDecodeError, match=msg):
-            unpackb(packb(b'abc\xeddef'), encoding='utf-8', use_list=1)
+        pytest.raises(UnicodeDecodeError, unpackb, packb(b'abc\xeddef'),
+                      encoding='utf-8', use_list=1)
 
     def testStrictUnicodePack(self):
-        msg = (r"'ascii' codec can't encode character u*'\\xed' in position 3:"
-               r" ordinal not in range\(128\)")
-        with pytest.raises(UnicodeEncodeError, match=msg):
-            packb("abc\xeddef", encoding='ascii', unicode_errors='strict')
+        pytest.raises(UnicodeEncodeError, packb, compat.u("abc\xeddef"),
+                      encoding='ascii', unicode_errors='strict')
 
     def testIgnoreErrorsPack(self):
         re = unpackb(
-            packb("abcФФФdef", encoding='ascii', unicode_errors='ignore'),
-            encoding='utf-8', use_list=1)
-        assert re == "abcdef"
+            packb(
+                compat.u("abcФФФdef"), encoding='ascii',
+                unicode_errors='ignore'), encoding='utf-8', use_list=1)
+        assert re == compat.u("abcdef")
 
     def testNoEncoding(self):
-        msg = "Can't encode unicode string: no encoding is specified"
-        with pytest.raises(TypeError, match=msg):
-            packb("abc", encoding=None)
+        pytest.raises(TypeError, packb, compat.u("abc"), encoding=None)
 
     def testDecodeBinary(self):
         re = unpackb(packb("abc"), encoding=None, use_list=1)
@@ -91,7 +93,7 @@ class TestPack:
             1.0, use_single_float=False) == b'\xcb' + struct.pack('>d', 1.0)
 
     def testArraySize(self, sizes=[0, 5, 50, 1000]):
-        bio = BytesIO()
+        bio = compat.BytesIO()
         packer = Packer()
         for size in sizes:
             bio.write(packer.pack_array_header(size))
@@ -110,7 +112,7 @@ class TestPack:
             for i in range(size):
                 packer.pack(i)
 
-        bio = BytesIO(packer.bytes())
+        bio = compat.BytesIO(packer.bytes())
         unpacker = Unpacker(bio, use_list=1)
         for size in sizes:
             assert unpacker.unpack() == list(range(size))
@@ -119,7 +121,7 @@ class TestPack:
         assert packer.bytes() == b''
 
     def testMapSize(self, sizes=[0, 5, 50, 1000]):
-        bio = BytesIO()
+        bio = compat.BytesIO()
         packer = Packer()
         for size in sizes:
             bio.write(packer.pack_map_header(size))

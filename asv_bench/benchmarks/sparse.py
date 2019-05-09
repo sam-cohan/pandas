@@ -5,6 +5,8 @@ import scipy.sparse
 from pandas import (SparseSeries, SparseDataFrame, SparseArray, Series,
                     date_range, MultiIndex)
 
+from .pandas_vb_common import setup  # noqa
+
 
 def make_array(size, dense_proportion, fill_value, dtype):
     dense_size = int(size * dense_proportion)
@@ -14,7 +16,9 @@ def make_array(size, dense_proportion, fill_value, dtype):
     return arr
 
 
-class SparseSeriesToFrame:
+class SparseSeriesToFrame(object):
+
+    goal_time = 0.2
 
     def setup(self):
         K = 50
@@ -31,8 +35,9 @@ class SparseSeriesToFrame:
         SparseDataFrame(self.series)
 
 
-class SparseArrayConstructor:
+class SparseArrayConstructor(object):
 
+    goal_time = 0.2
     params = ([0.1, 0.01], [0, np.nan],
               [np.int64, np.float64, np.object])
     param_names = ['dense_proportion', 'fill_value', 'dtype']
@@ -45,7 +50,9 @@ class SparseArrayConstructor:
         SparseArray(self.array, fill_value=fill_value, dtype=dtype)
 
 
-class SparseDataFrameConstructor:
+class SparseDataFrameConstructor(object):
+
+    goal_time = 0.2
 
     def setup(self):
         N = 1000
@@ -63,7 +70,9 @@ class SparseDataFrameConstructor:
         SparseDataFrame(self.dict)
 
 
-class FromCoo:
+class FromCoo(object):
+
+    goal_time = 0.2
 
     def setup(self):
         self.matrix = scipy.sparse.coo_matrix(([3.0, 1.0, 2.0],
@@ -74,7 +83,9 @@ class FromCoo:
         SparseSeries.from_coo(self.matrix)
 
 
-class ToCoo:
+class ToCoo(object):
+
+    goal_time = 0.2
 
     def setup(self):
         s = Series([np.nan] * 10000)
@@ -90,8 +101,9 @@ class ToCoo:
                        sort_labels=True)
 
 
-class Arithmetic:
+class Arithmetic(object):
 
+    goal_time = 0.2
     params = ([0.1, 0.01], [0, np.nan])
     param_names = ['dense_proportion', 'fill_value']
 
@@ -115,8 +127,9 @@ class Arithmetic:
         self.array1 / self.array2
 
 
-class ArithmeticBlock:
+class ArithmeticBlock(object):
 
+    goal_time = 0.2
     params = [np.nan, 0]
     param_names = ['fill_value']
 
@@ -147,6 +160,3 @@ class ArithmeticBlock:
 
     def time_division(self, fill_value):
         self.arr1 / self.arr2
-
-
-from .pandas_vb_common import setup  # noqa: F401

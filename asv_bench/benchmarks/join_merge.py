@@ -1,17 +1,21 @@
+import warnings
 import string
 
 import numpy as np
 import pandas.util.testing as tm
-from pandas import (DataFrame, Series, MultiIndex,
-                    date_range, concat, merge, merge_asof)
-
+from pandas import (DataFrame, Series, MultiIndex, date_range, concat, merge,
+                    merge_asof)
 try:
     from pandas import merge_ordered
 except ImportError:
     from pandas import ordered_merge as merge_ordered
 
+from .pandas_vb_common import Panel, setup  # noqa
 
-class Append:
+
+class Append(object):
+
+    goal_time = 0.2
 
     def setup(self):
         self.df1 = DataFrame(np.random.randn(10000, 4),
@@ -22,7 +26,11 @@ class Append:
         self.mdf1['obj1'] = 'bar'
         self.mdf1['obj2'] = 'bar'
         self.mdf1['int1'] = 5
-        self.mdf1 = self.mdf1._consolidate()
+        try:
+            with warnings.catch_warnings(record=True):
+                self.mdf1.consolidate(inplace=True)
+        except:
+            pass
         self.mdf2 = self.mdf1.copy()
         self.mdf2.index = self.df2.index
 
@@ -33,8 +41,9 @@ class Append:
         self.mdf1.append(self.mdf2)
 
 
-class Concat:
+class Concat(object):
 
+    goal_time = 0.2
     params = [0, 1]
     param_names = ['axis']
 
@@ -47,10 +56,9 @@ class Concat:
                        index=date_range('20130101', periods=N, freq='s'))
         self.empty_left = [DataFrame(), df]
         self.empty_right = [df, DataFrame()]
-        self.mixed_ndims = [df, df.head(N // 2)]
 
     def time_concat_series(self, axis):
-        concat(self.series, axis=axis, sort=False)
+        concat(self.series, axis=axis)
 
     def time_concat_small_frames(self, axis):
         concat(self.small_frames, axis=axis)
@@ -61,12 +69,36 @@ class Concat:
     def time_concat_empty_left(self, axis):
         concat(self.empty_left, axis=axis)
 
-    def time_concat_mixed_ndims(self, axis):
-        concat(self.mixed_ndims, axis=axis)
+
+class ConcatPanels(object):
+
+    goal_time = 0.2
+    params = ([0, 1, 2], [True, False])
+    param_names = ['axis', 'ignore_index']
+
+    def setup(self, axis, ignore_index):
+        with warnings.catch_warnings(record=True):
+            panel_c = Panel(np.zeros((10000, 200, 2),
+                                     dtype=np.float32,
+                                     order='C'))
+            self.panels_c = [panel_c] * 20
+            panel_f = Panel(np.zeros((10000, 200, 2),
+                            dtype=np.float32,
+                            order='F'))
+            self.panels_f = [panel_f] * 20
+
+    def time_c_ordered(self, axis, ignore_index):
+        with warnings.catch_warnings(record=True):
+            concat(self.panels_c, axis=axis, ignore_index=ignore_index)
+
+    def time_f_ordered(self, axis, ignore_index):
+        with warnings.catch_warnings(record=True):
+            concat(self.panels_f, axis=axis, ignore_index=ignore_index)
 
 
-class ConcatDataFrames:
+class ConcatDataFrames(object):
 
+    goal_time = 0.2
     params = ([0, 1], [True, False])
     param_names = ['axis', 'ignore_index']
 
@@ -85,24 +117,25 @@ class ConcatDataFrames:
         concat(self.frame_f, axis=axis, ignore_index=ignore_index)
 
 
-class Join:
+class Join(object):
 
+    goal_time = 0.2
     params = [True, False]
     param_names = ['sort']
 
     def setup(self, sort):
         level1 = tm.makeStringIndex(10).values
         level2 = tm.makeStringIndex(1000).values
-        codes1 = np.arange(10).repeat(1000)
-        codes2 = np.tile(np.arange(1000), 10)
+        label1 = np.arange(10).repeat(1000)
+        label2 = np.tile(np.arange(1000), 10)
         index2 = MultiIndex(levels=[level1, level2],
-                            codes=[codes1, codes2])
+                            labels=[label1, label2])
         self.df_multi = DataFrame(np.random.randn(len(index2), 4),
                                   index=index2,
                                   columns=['A', 'B', 'C', 'D'])
 
-        self.key1 = np.tile(level1.take(codes1), 10)
-        self.key2 = np.tile(level2.take(codes2), 10)
+        self.key1 = np.tile(level1.take(label1), 10)
+        self.key2 = np.tile(level2.take(label2), 10)
         self.df = DataFrame({'data1': np.random.randn(100000),
                              'data2': np.random.randn(100000),
                              'key1': self.key1,
@@ -132,7 +165,9 @@ class Join:
         self.df_shuf.join(self.df_key2, on='key2', sort=sort)
 
 
-class JoinIndex:
+class JoinIndex(object):
+
+    goal_time = 0.2
 
     def setup(self):
         N = 50000
@@ -145,9 +180,11 @@ class JoinIndex:
         self.left.join(self.right, on='jim')
 
 
-class JoinNonUnique:
+class JoinNonUnique(object):
     # outer join of non-unique
     # GH 6329
+    goal_time = 0.2
+
     def setup(self):
         date_index = date_range('01-Jan-2013', '23-Jan-2013', freq='T')
         daily_dates = date_index.to_period('D').to_timestamp('S', 'S')
@@ -162,8 +199,9 @@ class JoinNonUnique:
         self.fracofday * self.temp
 
 
-class Merge:
+class Merge(object):
 
+    goal_time = 0.2
     params = [True, False]
     param_names = ['sort']
 
@@ -196,8 +234,9 @@ class Merge:
         merge(self.df, self.df2, on='key1', sort=sort)
 
 
-class I8Merge:
+class I8Merge(object):
 
+    goal_time = 0.2
     params = ['inner', 'outer', 'left', 'right']
     param_names = ['how']
 
@@ -214,7 +253,9 @@ class I8Merge:
         merge(self.left, self.right, how=how)
 
 
-class MergeCategoricals:
+class MergeCategoricals(object):
+
+    goal_time = 0.2
 
     def setup(self):
         self.left_object = DataFrame(
@@ -237,7 +278,7 @@ class MergeCategoricals:
         merge(self.left_cat, self.right_cat, on='X')
 
 
-class MergeOrdered:
+class MergeOrdered(object):
 
     def setup(self):
         groups = tm.makeStringIndex(10).values
@@ -251,11 +292,9 @@ class MergeOrdered:
         merge_ordered(self.left, self.right, on='key', left_by='group')
 
 
-class MergeAsof:
-    params = [['backward', 'forward', 'nearest']]
-    param_names = ['direction']
+class MergeAsof(object):
 
-    def setup(self, direction):
+    def setup(self):
         one_count = 200000
         two_count = 1000000
 
@@ -287,26 +326,25 @@ class MergeAsof:
         self.df1e = df1[['time', 'key', 'key2', 'value1']]
         self.df2e = df2[['time', 'key', 'key2', 'value2']]
 
-    def time_on_int(self, direction):
-        merge_asof(self.df1a, self.df2a, on='time', direction=direction)
+    def time_on_int(self):
+        merge_asof(self.df1a, self.df2a, on='time')
 
-    def time_on_int32(self, direction):
-        merge_asof(self.df1d, self.df2d, on='time32', direction=direction)
+    def time_on_int32(self):
+        merge_asof(self.df1d, self.df2d, on='time32')
 
-    def time_by_object(self, direction):
-        merge_asof(self.df1b, self.df2b, on='time', by='key',
-                   direction=direction)
+    def time_by_object(self):
+        merge_asof(self.df1b, self.df2b, on='time', by='key')
 
-    def time_by_int(self, direction):
-        merge_asof(self.df1c, self.df2c, on='time', by='key2',
-                   direction=direction)
+    def time_by_int(self):
+        merge_asof(self.df1c, self.df2c, on='time', by='key2')
 
-    def time_multiby(self, direction):
-        merge_asof(self.df1e, self.df2e, on='time', by=['key', 'key2'],
-                   direction=direction)
+    def time_multiby(self):
+        merge_asof(self.df1e, self.df2e, on='time', by=['key', 'key2'])
 
 
-class Align:
+class Align(object):
+
+    goal_time = 0.2
 
     def setup(self):
         size = 5 * 10**5
@@ -322,6 +360,3 @@ class Align:
 
     def time_series_align_left_monotonic(self):
         self.ts1.align(self.ts2, join='left')
-
-
-from .pandas_vb_common import setup  # noqa: F401

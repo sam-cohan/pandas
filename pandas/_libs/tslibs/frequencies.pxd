@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# cython: profile=False
 
 cpdef object get_rule_month(object source, object default=*)
 

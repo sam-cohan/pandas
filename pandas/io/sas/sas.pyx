@@ -2,22 +2,20 @@
 # cython: boundscheck=False, initializedcheck=False
 
 import numpy as np
-import pandas.io.sas.sas_constants as const
-
-ctypedef signed long long   int64_t
-ctypedef unsigned char      uint8_t
-ctypedef unsigned short     uint16_t
+cimport numpy as cnp
+from numpy cimport uint8_t, uint16_t, int8_t, int64_t, ndarray
+import sas_constants as const
 
 # rle_decompress decompresses data using a Run Length Encoding
 # algorithm.  It is partially documented here:
 #
-# https://cran.r-project.org/package=sas7bdat/vignettes/sas7bdat.pdf
-cdef const uint8_t[:] rle_decompress(int result_length,
-                                     const uint8_t[:] inbuff):
+# https://cran.r-project.org/web/packages/sas7bdat/vignettes/sas7bdat.pdf
+cdef ndarray[uint8_t, ndim=1] rle_decompress(
+        int result_length, ndarray[uint8_t, ndim=1] inbuff):
 
     cdef:
         uint8_t control_byte, x
-        uint8_t[:] result = np.zeros(result_length, np.uint8)
+        uint8_t [:] result = np.zeros(result_length, np.uint8)
         int rpos = 0, ipos = 0, length = len(inbuff)
         int i, nbytes, end_of_first_byte
 
@@ -106,8 +104,7 @@ cdef const uint8_t[:] rle_decompress(int result_length,
             raise ValueError("unknown control byte: {byte}"
                              .format(byte=control_byte))
 
-    # In py37 cython/clang sees `len(outbuff)` as size_t and not Py_ssize_t
-    if <Py_ssize_t>len(result) != <Py_ssize_t>result_length:
+    if len(result) != result_length:
         raise ValueError("RLE: {got} != {expect}".format(got=len(result),
                                                          expect=result_length))
 
@@ -117,14 +114,14 @@ cdef const uint8_t[:] rle_decompress(int result_length,
 # rdc_decompress decompresses data using the Ross Data Compression algorithm:
 #
 # http://collaboration.cmc.ec.gc.ca/science/rpn/biblio/ddj/Website/articles/CUJ/1992/9210/ross/ross.htm
-cdef const uint8_t[:] rdc_decompress(int result_length,
-                                     const uint8_t[:] inbuff):
+cdef ndarray[uint8_t, ndim=1] rdc_decompress(
+        int result_length, ndarray[uint8_t, ndim=1] inbuff):
 
     cdef:
         uint8_t cmd
         uint16_t ctrl_bits, ctrl_mask = 0, ofs, cnt
         int ipos = 0, rpos = 0, k
-        uint8_t[:] outbuff = np.zeros(result_length, dtype=np.uint8)
+        uint8_t [:] outbuff = np.zeros(result_length, dtype=np.uint8)
 
     ii = -1
 
@@ -189,13 +186,11 @@ cdef const uint8_t[:] rdc_decompress(int result_length,
         else:
             raise ValueError("unknown RDC command")
 
-    # In py37 cython/clang sees `len(outbuff)` as size_t and not Py_ssize_t
-    if <Py_ssize_t>len(outbuff) != <Py_ssize_t>result_length:
+    if len(outbuff) != result_length:
         raise ValueError("RDC: {got} != {expect}\n"
                          .format(got=len(outbuff), expect=result_length))
 
     return np.asarray(outbuff)
-
 
 cdef enum ColumnTypes:
     column_type_decimal = 1
@@ -203,15 +198,13 @@ cdef enum ColumnTypes:
 
 
 # type the page_data types
-cdef:
-    int page_meta_type = const.page_meta_type
-    int page_mix_types_0 = const.page_mix_types[0]
-    int page_mix_types_1 = const.page_mix_types[1]
-    int page_data_type = const.page_data_type
-    int subheader_pointers_offset = const.subheader_pointers_offset
+cdef int page_meta_type = const.page_meta_type
+cdef int page_mix_types_0 = const.page_mix_types[0]
+cdef int page_mix_types_1 = const.page_mix_types[1]
+cdef int page_data_type = const.page_data_type
+cdef int subheader_pointers_offset = const.subheader_pointers_offset
 
-
-cdef class Parser:
+cdef class Parser(object):
 
     cdef:
         int column_count
@@ -233,8 +226,8 @@ cdef class Parser:
         int subheader_pointer_length
         int current_page_type
         bint is_little_endian
-        const uint8_t[:] (*decompress)(int result_length,
-                                       const uint8_t[:] inbuff)
+        ndarray[uint8_t, ndim=1] (*decompress)(
+            int result_length, ndarray[uint8_t, ndim=1] inbuff)
         object parser
 
     def __init__(self, object parser):
@@ -245,8 +238,8 @@ cdef class Parser:
         self.parser = parser
         self.header_length = self.parser.header_length
         self.column_count = parser.column_count
-        self.lengths = parser.column_data_lengths()
-        self.offsets = parser.column_data_offsets()
+        self.lengths = parser._column_data_lengths
+        self.offsets = parser._column_data_offsets
         self.byte_chunk = parser._byte_chunk
         self.string_chunk = parser._string_chunk
         self.row_length = parser.row_length
@@ -258,7 +251,7 @@ cdef class Parser:
         # page indicators
         self.update_next_page()
 
-        column_types = parser.column_types()
+        column_types = parser.column_types
 
         # map column types
         for j in range(self.column_count):
@@ -376,7 +369,7 @@ cdef class Parser:
                     if done:
                         return True
                 return False
-            elif self.current_page_type & page_data_type == page_data_type:
+            elif self.current_page_type == page_data_type:
                 self.process_byte_array_with_data(
                     bit_offset + subheader_pointers_offset +
                     self.current_row_on_page_index * self.row_length,
@@ -398,7 +391,7 @@ cdef class Parser:
             Py_ssize_t j
             int s, k, m, jb, js, current_row
             int64_t lngt, start, ct
-            const uint8_t[:] source
+            ndarray[uint8_t, ndim=1] source
             int64_t[:] column_types
             int64_t[:] lengths
             int64_t[:] offsets
@@ -437,8 +430,8 @@ cdef class Parser:
                 jb += 1
             elif column_types[j] == column_type_string:
                 # string
-                string_chunk[js, current_row] = np.array(source[start:(
-                    start + lngt)]).tostring().rstrip(b"\x00 ")
+                string_chunk[js, current_row] = source[start:(
+                    start + lngt)].tostring().rstrip()
                 js += 1
 
         self.current_row_on_page_index += 1

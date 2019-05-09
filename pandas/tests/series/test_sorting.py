@@ -1,16 +1,26 @@
-import random
+# coding=utf-8
 
-import numpy as np
 import pytest
 
-from pandas import Categorical, DataFrame, IntervalIndex, MultiIndex, Series
+import numpy as np
+import random
+
+from pandas import DataFrame, Series, MultiIndex, IntervalIndex, Categorical
+
+from pandas.util.testing import assert_series_equal, assert_almost_equal
 import pandas.util.testing as tm
-from pandas.util.testing import assert_almost_equal, assert_series_equal
 
 from .common import TestData
 
 
 class TestSeriesSorting(TestData):
+
+    def test_sortlevel_deprecated(self):
+        ts = self.ts.copy()
+
+        # see gh-9816
+        with tm.assert_produces_warning(FutureWarning):
+            ts.sortlevel()
 
     def test_sort_values(self):
 
@@ -53,21 +63,16 @@ class TestSeriesSorting(TestData):
         expected = ts.sort_values(ascending=False, na_position='first')
         assert_series_equal(expected, ordered)
 
-        msg = "ascending must be boolean"
-        with pytest.raises(ValueError, match=msg):
-            ts.sort_values(ascending=None)
-        msg = r"Length of ascending \(0\) must be 1 for Series"
-        with pytest.raises(ValueError, match=msg):
-            ts.sort_values(ascending=[])
-        msg = r"Length of ascending \(3\) must be 1 for Series"
-        with pytest.raises(ValueError, match=msg):
-            ts.sort_values(ascending=[1, 2, 3])
-        msg = r"Length of ascending \(2\) must be 1 for Series"
-        with pytest.raises(ValueError, match=msg):
-            ts.sort_values(ascending=[False, False])
-        msg = "ascending must be boolean"
-        with pytest.raises(ValueError, match=msg):
-            ts.sort_values(ascending='foobar')
+        pytest.raises(ValueError,
+                      lambda: ts.sort_values(ascending=None))
+        pytest.raises(ValueError,
+                      lambda: ts.sort_values(ascending=[]))
+        pytest.raises(ValueError,
+                      lambda: ts.sort_values(ascending=[1, 2, 3]))
+        pytest.raises(ValueError,
+                      lambda: ts.sort_values(ascending=[False, False]))
+        pytest.raises(ValueError,
+                      lambda: ts.sort_values(ascending='foobar'))
 
         # inplace=True
         ts = self.ts.copy()
@@ -81,10 +86,10 @@ class TestSeriesSorting(TestData):
         df = DataFrame(np.random.randn(10, 4))
         s = df.iloc[:, 0]
 
-        msg = ("This Series is a view of some other array, to sort in-place"
-               " you must create a copy")
-        with pytest.raises(ValueError, match=msg):
+        def f():
             s.sort_values(inplace=True)
+
+        pytest.raises(ValueError, f)
 
     def test_sort_index(self):
         rindex = list(self.ts.index)
@@ -107,16 +112,13 @@ class TestSeriesSorting(TestData):
         sorted_series = random_order.sort_index(axis=0)
         assert_series_equal(sorted_series, self.ts)
 
-        msg = ("No axis named 1 for object type"
-               " <class 'pandas.core.series.Series'>")
-        with pytest.raises(ValueError, match=msg):
-            random_order.sort_values(axis=1)
+        pytest.raises(ValueError, lambda: random_order.sort_values(axis=1))
 
         sorted_series = random_order.sort_index(level=0, axis=0)
         assert_series_equal(sorted_series, self.ts)
 
-        with pytest.raises(ValueError, match=msg):
-            random_order.sort_index(level=0, axis=1)
+        pytest.raises(ValueError,
+                      lambda: random_order.sort_index(level=0, axis=1))
 
     def test_sort_index_inplace(self):
 
@@ -139,20 +141,19 @@ class TestSeriesSorting(TestData):
         assert result is None
         tm.assert_series_equal(random_order, self.ts)
 
-    @pytest.mark.parametrize("level", ['A', 0])  # GH 21052
-    def test_sort_index_multiindex(self, level):
+    def test_sort_index_multiindex(self):
 
         mi = MultiIndex.from_tuples([[1, 1, 3], [1, 1, 1]], names=list('ABC'))
         s = Series([1, 2], mi)
         backwards = s.iloc[[1, 0]]
 
         # implicit sort_remaining=True
-        res = s.sort_index(level=level)
+        res = s.sort_index(level='A')
         assert_series_equal(backwards, res)
 
         # GH13496
-        # sort has no effect without remaining lvls
-        res = s.sort_index(level=level, sort_remaining=False)
+        # rows share same level='A': sort has no effect without remaining lvls
+        res = s.sort_index(level='A', sort_remaining=False)
         assert_series_equal(s, res)
 
     def test_sort_index_kind(self):

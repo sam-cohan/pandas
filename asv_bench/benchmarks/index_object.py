@@ -1,11 +1,14 @@
 import numpy as np
 import pandas.util.testing as tm
 from pandas import (Series, date_range, DatetimeIndex, Index, RangeIndex,
-                    Float64Index, IntervalIndex)
+                    Float64Index)
+
+from .pandas_vb_common import setup  # noqa
 
 
-class SetOperations:
+class SetOperations(object):
 
+    goal_time = 0.2
     params = (['datetime', 'date_string', 'int', 'strings'],
               ['intersection', 'union', 'symmetric_difference'])
     param_names = ['dtype', 'method']
@@ -29,7 +32,9 @@ class SetOperations:
         getattr(self.left, method)(self.right)
 
 
-class SetDisjoint:
+class SetDisjoint(object):
+
+    goal_time = 0.2
 
     def setup(self):
         N = 10**5
@@ -41,7 +46,9 @@ class SetDisjoint:
         self.datetime_left.difference(self.datetime_right)
 
 
-class Datetime:
+class Datetime(object):
+
+    goal_time = 0.2
 
     def setup(self):
         self.dr = date_range('20000101', freq='D', periods=10000)
@@ -50,7 +57,7 @@ class Datetime:
         self.dr._is_dates_only
 
 
-class Ops:
+class Ops(object):
 
     sample_time = 0.2
     params = ['float', 'int']
@@ -77,7 +84,9 @@ class Ops:
         self.index % 2
 
 
-class Range:
+class Range(object):
+
+    goal_time = 0.2
 
     def setup(self):
         self.idx_inc = RangeIndex(start=0, stop=10**7, step=3)
@@ -96,7 +105,9 @@ class Range:
         self.idx_inc.min()
 
 
-class IndexAppend:
+class IndexAppend(object):
+
+    goal_time = 0.2
 
     def setup(self):
 
@@ -125,8 +136,9 @@ class IndexAppend:
         self.obj_idx.append(self.object_idxs)
 
 
-class Indexing:
+class Indexing(object):
 
+    goal_time = 0.2
     params = ['String', 'Float', 'Int']
     param_names = ['dtype']
 
@@ -138,8 +150,7 @@ class Indexing:
         self.sorted = self.idx.sort_values()
         half = N // 2
         self.non_unique = self.idx[:half].append(self.idx[:half])
-        self.non_unique_sorted = (self.sorted[:half].append(self.sorted[:half])
-                                  .sort_values())
+        self.non_unique_sorted = self.sorted[:half].append(self.sorted[:half])
         self.key = self.sorted[N // 4]
 
     def time_boolean_array(self, dtype):
@@ -170,8 +181,10 @@ class Indexing:
         self.non_unique_sorted.get_loc(self.key)
 
 
-class Float64IndexMethod:
+class Float64IndexMethod(object):
     # GH 13166
+    goal_time = 0.2
+
     def setup(self):
         N = 100000
         a = np.arange(N)
@@ -179,20 +192,3 @@ class Float64IndexMethod:
 
     def time_get_loc(self):
         self.ind.get_loc(0)
-
-
-class IntervalIndexMethod:
-    # GH 24813
-    params = [10**3, 10**5]
-
-    def setup(self, N):
-        left = np.append(np.arange(N), np.array(0))
-        right = np.append(np.arange(1, N + 1), np.array(1))
-        self.intv = IntervalIndex.from_arrays(left, right)
-        self.intv._engine
-
-    def time_monotonic_inc(self, N):
-        self.intv.is_monotonic_increasing
-
-
-from .pandas_vb_common import setup  # noqa: F401

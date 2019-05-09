@@ -1,12 +1,11 @@
 from pandas.util._decorators import cache_readonly
-
-import pandas as pd
 import pandas.util.testing as tm
+import pandas as pd
 
 _ts = tm.makeTimeSeries()
 
 
-class TestData:
+class TestData(object):
 
     @cache_readonly
     def ts(self):

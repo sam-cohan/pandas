@@ -1,6 +1,8 @@
+# -*- coding: utf-8 -*-
+# cython: profile=False
 from distutils.version import LooseVersion
 
-from cython import Py_ssize_t
+from cython cimport Py_ssize_t
 from cpython cimport Py_INCREF
 
 from libc.stdlib cimport malloc, free
@@ -14,14 +16,16 @@ from numpy cimport (ndarray,
                     flatiter)
 cnp.import_array()
 
-cimport pandas._libs.util as util
-from pandas._libs.lib import maybe_convert_objects
+cimport util
+from lib import maybe_convert_objects
+
+is_numpy_prior_1_6_2 = LooseVersion(np.__version__) < '1.6.2'
 
 
 cdef _get_result_array(object obj, Py_ssize_t size, Py_ssize_t cnt):
 
     if (util.is_array(obj) or
-            (isinstance(obj, list) and len(obj) == cnt) or
+            isinstance(obj, list) and len(obj) == cnt or
             getattr(obj, 'shape', None) == (cnt,)):
         raise ValueError('function does not reduce')
 
@@ -152,7 +156,7 @@ cdef class Reducer:
                     result = _get_result_array(res,
                                                self.nresults,
                                                len(self.dummy))
-                    it = <flatiter>PyArray_IterNew(result)
+                    it = <flatiter> PyArray_IterNew(result)
 
                 PyArray_SETITEM(result, PyArray_ITER_DATA(it), res)
                 chunk.data = chunk.data + self.increment
@@ -264,10 +268,7 @@ cdef class SeriesBinGrouper:
                     cached_typ = self.typ(vslider.buf, index=cached_ityp,
                                           name=name)
                 else:
-                    # See the comment in indexes/base.py about _index_data.
-                    # We need this for EA-backed indexes that have a reference
-                    # to a 1-d ndarray like datetime / timedelta / period.
-                    object.__setattr__(cached_ityp, '_index_data', islider.buf)
+                    object.__setattr__(cached_ityp, '_data', islider.buf)
                     cached_ityp._engine.clear_mapping()
                     object.__setattr__(
                         cached_typ._data._block, 'values', vslider.buf)
@@ -282,7 +283,8 @@ cdef class SeriesBinGrouper:
                     result = _get_result_array(res,
                                                self.ngroups,
                                                len(self.dummy_arr))
-                result[i] = res
+
+                util.assign_value_1d(result, i, res)
 
                 islider.advance(group_size)
                 vslider.advance(group_size)
@@ -341,9 +343,7 @@ cdef class SeriesGrouper:
             index = None
         else:
             values = dummy.values
-            # GH 23683: datetimetz types are equivalent to datetime types here
-            if (dummy.dtype != self.arr.dtype
-                    and values.dtype != self.arr.dtype):
+            if dummy.dtype != self.arr.dtype:
                 raise ValueError('Dummy array must be same dtype')
             if not values.flags.contiguous:
                 values = values.copy()
@@ -409,7 +409,7 @@ cdef class SeriesGrouper:
                                                    self.ngroups,
                                                    len(self.dummy_arr))
 
-                    result[lab] = res
+                    util.assign_value_1d(result, lab, res)
                     counts[lab] = group_size
                     islider.advance(group_size)
                     vslider.advance(group_size)
@@ -442,7 +442,6 @@ cdef inline _extract_result(object res):
                 res = res[0]
     return res
 
-
 cdef class Slider:
     """
     Only handles contiguous data for now
@@ -471,7 +470,7 @@ cdef class Slider:
         self.buf.strides[0] = self.stride
 
     cpdef advance(self, Py_ssize_t k):
-        self.buf.data = <char*>self.buf.data + self.stride * k
+        self.buf.data = <char*> self.buf.data + self.stride * k
 
     cdef move(self, int start, int end):
         """
@@ -495,7 +494,7 @@ class InvalidApply(Exception):
 
 
 def apply_frame_axis0(object frame, object f, object names,
-                      const int64_t[:] starts, const int64_t[:] ends):
+                      ndarray[int64_t] starts, ndarray[int64_t] ends):
     cdef:
         BlockSlider slider
         Py_ssize_t i, n = len(starts)
@@ -508,6 +507,17 @@ def apply_frame_axis0(object frame, object f, object names,
 
     results = []
 
+    # Need to infer if our low-level mucking is going to cause a segfault
+    if n > 0:
+        chunk = frame.iloc[starts[0]:ends[0]]
+        object.__setattr__(chunk, 'name', names[0])
+        try:
+            result = f(chunk)
+            if result is chunk:
+                raise InvalidApply('Function unsafe for fast apply')
+        except:
+            raise InvalidApply('Let this error raise above us')
+
     slider = BlockSlider(frame)
 
     mutated = False
@@ -517,18 +527,13 @@ def apply_frame_axis0(object frame, object f, object names,
             slider.move(starts[i], ends[i])
 
             item_cache.clear()  # ugh
-            chunk = slider.dummy
-            object.__setattr__(chunk, 'name', names[i])
 
-            try:
-                piece = f(chunk)
-            except:
-                raise InvalidApply('Let this error raise above us')
+            object.__setattr__(slider.dummy, 'name', names[i])
+            piece = f(slider.dummy)
 
-            # Need to infer if low level index slider will cause segfaults
-            require_slow_apply = i == 0 and piece is chunk
+            # I'm paying the price for index-sharing, ugh
             try:
-                if piece.index is chunk.index:
+                if piece.index is slider.dummy.index:
                     piece = piece.copy(deep='all')
                 else:
                     mutated = True
@@ -536,12 +541,6 @@ def apply_frame_axis0(object frame, object f, object names,
                 pass
 
             results.append(piece)
-
-            # If the data was modified inplace we need to
-            # take the slow path to not risk segfaults
-            # we have already computed the first piece
-            if require_slow_apply:
-                break
     finally:
         slider.reset()
 
@@ -573,15 +572,12 @@ cdef class BlockSlider:
             util.set_array_not_contiguous(x)
 
         self.nblocks = len(self.blocks)
-        # See the comment in indexes/base.py about _index_data.
-        # We need this for EA-backed indexes that have a reference to a 1-d
-        # ndarray like datetime / timedelta / period.
         self.idx_slider = Slider(
-            self.frame.index._index_data, self.dummy.index._index_data)
+            self.frame.index.values, self.dummy.index.values)
 
-        self.base_ptrs = <char**>malloc(sizeof(char*) * len(self.blocks))
+        self.base_ptrs = <char**> malloc(sizeof(char*) * len(self.blocks))
         for i, block in enumerate(self.blocks):
-            self.base_ptrs[i] = (<ndarray>block).data
+            self.base_ptrs[i] = (<ndarray> block).data
 
     def __dealloc__(self):
         free(self.base_ptrs)
@@ -601,8 +597,7 @@ cdef class BlockSlider:
 
         # move and set the index
         self.idx_slider.move(start, end)
-
-        object.__setattr__(self.index, '_index_data', self.idx_slider.buf)
+        object.__setattr__(self.index, '_data', self.idx_slider.buf)
         self.index._engine.clear_mapping()
 
     cdef reset(self):

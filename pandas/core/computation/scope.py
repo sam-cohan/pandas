@@ -2,19 +2,18 @@
 Module for scope operations
 """
 
-import datetime
+import sys
+import struct
 import inspect
-from io import StringIO
+import datetime
 import itertools
 import pprint
-import struct
-import sys
 
 import numpy as np
 
-from pandas._libs.tslibs import Timestamp
-from pandas.compat.chainmap import DeepChainMap
-
+import pandas
+import pandas as pd  # noqa
+from pandas.compat import DeepChainMap, map, StringIO
 from pandas.core.base import StringMixin
 import pandas.core.computation as compu
 
@@ -49,7 +48,7 @@ def _raw_hex_id(obj):
 
 
 _DEFAULT_GLOBALS = {
-    'Timestamp': Timestamp,
+    'Timestamp': pandas._libs.tslib.Timestamp,
     'datetime': datetime.datetime,
     'True': True,
     'False': False,
@@ -161,7 +160,7 @@ class Scope(StringMixin):
 
         Parameters
         ----------
-        key : str
+        key : text_type
             A variable name
         is_local : bool
             Flag indicating whether the variable is local or not (prefixed with

@@ -1,8 +1,11 @@
+# -*- coding: utf-8 -*-
+
 import pytest
-
+from warnings import catch_warnings
+import pandas  # noqa
+import pandas as pd
 from pandas.errors import AbstractMethodError
-
-import pandas as pd  # noqa
+import pandas.util.testing as tm
 
 
 @pytest.mark.parametrize(
@@ -44,6 +47,12 @@ def test_error_rename():
     except CParserError:
         pass
 
+    with catch_warnings(record=True):
+        try:
+            raise ParserError()
+        except pd.parser.CParserError:
+            pass
+
 
 class Foo:
     @classmethod
@@ -60,13 +69,13 @@ class Foo:
 
 def test_AbstractMethodError_classmethod():
     xpr = "This classmethod must be defined in the concrete class Foo"
-    with pytest.raises(AbstractMethodError, match=xpr):
+    with tm.assert_raises_regex(AbstractMethodError, xpr):
         Foo.classmethod()
 
     xpr = "This property must be defined in the concrete class Foo"
-    with pytest.raises(AbstractMethodError, match=xpr):
+    with tm.assert_raises_regex(AbstractMethodError, xpr):
         Foo().property
 
     xpr = "This method must be defined in the concrete class Foo"
-    with pytest.raises(AbstractMethodError, match=xpr):
+    with tm.assert_raises_regex(AbstractMethodError, xpr):
         Foo().method()

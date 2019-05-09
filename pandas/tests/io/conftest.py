@@ -1,29 +1,32 @@
-from distutils.version import LooseVersion
 import os
 
 import pytest
-
-import pandas.util.testing as tm
-
-from pandas.io.parsers import read_csv
+from pandas.io.parsers import read_table
+from pandas.util import testing as tm
 
 
 @pytest.fixture
-def tips_file(datapath):
+def parser_data(request):
+    return os.path.join(tm.get_data_path(), '..', 'parser', 'data')
+
+
+@pytest.fixture
+def tips_file(parser_data):
     """Path to the tips dataset"""
-    return datapath('io', 'parser', 'data', 'tips.csv')
+    return os.path.join(parser_data, 'tips.csv')
 
 
 @pytest.fixture
-def jsonl_file(datapath):
+def jsonl_file(parser_data):
     """Path a JSONL dataset"""
-    return datapath('io', 'parser', 'data', 'items.jsonl')
+    return os.path.join(parser_data, 'items.jsonl')
 
 
 @pytest.fixture
-def salaries_table(datapath):
+def salaries_table(parser_data):
     """DataFrame with the salaries dataset"""
-    return read_csv(datapath('io', 'parser', 'data', 'salaries.csv'), sep='\t')
+    path = os.path.join(parser_data, 'salaries.csv')
+    return read_table(path)
 
 
 @pytest.fixture
@@ -43,49 +46,38 @@ def s3_resource(tips_file, jsonl_file):
     """
     pytest.importorskip('s3fs')
     boto3 = pytest.importorskip('boto3')
-    botocore = pytest.importorskip('botocore')
+    moto = pytest.importorskip('moto')
 
-    if LooseVersion(botocore.__version__) < LooseVersion("1.11.0"):
-        # botocore leaks an uncatchable ResourceWarning before 1.11.0;
-        # see GH 23731 and https://github.com/boto/botocore/issues/1464
-        pytest.skip("botocore is leaking resources before 1.11.0")
+    test_s3_files = [
+        ('tips.csv', tips_file),
+        ('tips.csv.gz', tips_file + '.gz'),
+        ('tips.csv.bz2', tips_file + '.bz2'),
+        ('items.jsonl', jsonl_file),
+    ]
 
-    with tm.ensure_safe_environment_variables():
-        # temporary workaround as moto fails for botocore >= 1.11 otherwise,
-        # see https://github.com/spulec/moto/issues/1924 & 1952
-        os.environ.setdefault("AWS_ACCESS_KEY_ID", "foobar_key")
-        os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "foobar_secret")
+    def add_tips_files(bucket_name):
+        for s3_key, file_name in test_s3_files:
+            with open(file_name, 'rb') as f:
+                conn.Bucket(bucket_name).put_object(
+                    Key=s3_key,
+                    Body=f)
 
-        moto = pytest.importorskip('moto')
+    try:
 
-        test_s3_files = [
-            ('tips#1.csv', tips_file),
-            ('tips.csv', tips_file),
-            ('tips.csv.gz', tips_file + '.gz'),
-            ('tips.csv.bz2', tips_file + '.bz2'),
-            ('items.jsonl', jsonl_file),
-        ]
+        s3 = moto.mock_s3()
+        s3.start()
 
-        def add_tips_files(bucket_name):
-            for s3_key, file_name in test_s3_files:
-                with open(file_name, 'rb') as f:
-                    conn.Bucket(bucket_name).put_object(
-                        Key=s3_key,
-                        Body=f)
+        # see gh-16135
+        bucket = 'pandas-test'
+        conn = boto3.resource("s3", region_name="us-east-1")
 
-        try:
-            s3 = moto.mock_s3()
-            s3.start()
+        conn.create_bucket(Bucket=bucket)
+        add_tips_files(bucket)
 
-            # see gh-16135
-            bucket = 'pandas-test'
-            conn = boto3.resource("s3", region_name="us-east-1")
-
-            conn.create_bucket(Bucket=bucket)
-            add_tips_files(bucket)
-
-            conn.create_bucket(Bucket='cant_get_it', ACL='private')
-            add_tips_files('cant_get_it')
-            yield conn
-        finally:
-            s3.stop()
+        conn.create_bucket(Bucket='cant_get_it', ACL='private')
+        add_tips_files('cant_get_it')
+        yield conn
+    except:  # noqa: flake8
+        pytest.skip("failure to use s3 resource")
+    finally:
+        s3.stop()

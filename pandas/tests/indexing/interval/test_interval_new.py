@@ -1,13 +1,15 @@
-import numpy as np
 import pytest
+import numpy as np
+import pandas as pd
 
-from pandas import Interval, IntervalIndex, Series
+from pandas import Series, IntervalIndex, Interval
 import pandas.util.testing as tm
+
 
 pytestmark = pytest.mark.skip(reason="new indexing tests for issue 16316")
 
 
-class TestIntervalIndex:
+class TestIntervalIndex(object):
 
     def setup_method(self, method):
         self.s = Series(np.arange(5), IntervalIndex.from_breaks(np.arange(6)))
@@ -168,17 +170,17 @@ class TestIntervalIndex:
 
         # interval
         expected = 0
-        result = s.loc[Interval(1, 5)]
+        result = s.loc[pd.interval(1, 5)]
         tm.assert_series_equal(expected, result)
 
-        result = s[Interval(1, 5)]
+        result = s[pd.interval(1, 5)]
         tm.assert_series_equal(expected, result)
 
         expected = s
-        result = s.loc[[Interval(1, 5), Interval(3, 7)]]
+        result = s.loc[[pd.interval(1, 5), pd.Interval(3, 7)]]
         tm.assert_series_equal(expected, result)
 
-        result = s[[Interval(1, 5), Interval(3, 7)]]
+        result = s[[pd.interval(1, 5), pd.Interval(3, 7)]]
         tm.assert_series_equal(expected, result)
 
         with pytest.raises(KeyError):
@@ -195,17 +197,17 @@ class TestIntervalIndex:
 
         # slices with interval (only exact matches)
         expected = s
-        result = s.loc[Interval(1, 5):Interval(3, 7)]
+        result = s.loc[pd.interval(1, 5):pd.Interval(3, 7)]
         tm.assert_series_equal(expected, result)
 
-        result = s[Interval(1, 5):Interval(3, 7)]
+        result = s[pd.interval(1, 5):pd.Interval(3, 7)]
         tm.assert_series_equal(expected, result)
 
         with pytest.raises(KeyError):
-            s.loc[Interval(1, 6):Interval(3, 8)]
+            s.loc[pd.interval(1, 6):pd.Interval(3, 8)]
 
         with pytest.raises(KeyError):
-            s[Interval(1, 6):Interval(3, 8)]
+            s[pd.interval(1, 6):pd.Interval(3, 8)]
 
         # slices with scalar raise for overlapping intervals
         # TODO KeyError is the appropriate error?
@@ -215,7 +217,7 @@ class TestIntervalIndex:
     def test_non_unique(self):
 
         idx = IntervalIndex.from_tuples([(1, 3), (3, 7)])
-        s = Series(range(len(idx)), index=idx)
+        s = pd.Series(range(len(idx)), index=idx)
 
         result = s.loc[Interval(1, 3)]
         assert result == 0

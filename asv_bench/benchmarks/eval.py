@@ -5,8 +5,12 @@ try:
 except ImportError:
     import pandas.computation.expressions as expr
 
+from .pandas_vb_common import setup # noqa
 
-class Eval:
+
+class Eval(object):
+
+    goal_time = 0.2
 
     params = [['numexpr', 'python'], [1, 'all']]
     param_names = ['engine', 'threads']
@@ -37,7 +41,9 @@ class Eval:
         expr.set_numexpr_threads()
 
 
-class Query:
+class Query(object):
+
+    goal_time = 0.2
 
     def setup(self):
         N = 10**6
@@ -45,7 +51,7 @@ class Query:
         index = pd.date_range('20010101', periods=N, freq='T')
         s = pd.Series(index)
         self.ts = s.iloc[halfway]
-        self.df = pd.DataFrame({'a': np.random.randn(N), 'dates': index},
+        self.df = pd.DataFrame({'a': np.random.randn(N), 'dates': s},
                                index=index)
         data = np.random.randn(N)
         self.min_val = data.min()
@@ -59,6 +65,3 @@ class Query:
 
     def time_query_with_boolean_selection(self):
         self.df.query('(a >= @self.min_val) & (a <= @self.max_val)')
-
-
-from .pandas_vb_common import setup  # noqa: F401

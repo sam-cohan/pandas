@@ -1,35 +1,24 @@
 import numpy as np
-
-from pandas._libs import lib
-
-from pandas.core.dtypes.cast import maybe_downcast_to_dtype
-from pandas.core.dtypes.common import (
-    ensure_object, is_datetime_or_timedelta_dtype, is_decimal, is_number,
-    is_numeric_dtype, is_scalar)
-from pandas.core.dtypes.generic import ABCIndexClass, ABCSeries
-
 import pandas as pd
+from pandas.core.dtypes.common import (
+    is_scalar,
+    is_numeric_dtype,
+    is_decimal,
+    is_datetime_or_timedelta_dtype,
+    is_number,
+    _ensure_object)
+from pandas.core.dtypes.generic import ABCSeries, ABCIndexClass
+from pandas.core.dtypes.cast import maybe_downcast_to_dtype
+from pandas._libs import lib
 
 
 def to_numeric(arg, errors='raise', downcast=None):
     """
     Convert argument to a numeric type.
 
-    The default return dtype is `float64` or `int64`
-    depending on the data supplied. Use the `downcast` parameter
-    to obtain other dtypes.
-
-    Please note that precision loss may occur if really large numbers
-    are passed in. Due to the internal limitations of `ndarray`, if
-    numbers smaller than `-9223372036854775808` (np.iinfo(np.int64).min)
-    or larger than `18446744073709551615` (np.iinfo(np.uint64).max) are
-    passed in, it is very likely they will be converted to float so that
-    they can stored in an `ndarray`. These warnings apply similarly to
-    `Series` since it internally leverages `ndarray`.
-
     Parameters
     ----------
-    arg : scalar, list, tuple, 1-d array, or Series
+    arg : list, tuple, 1-d array, or Series
     errors : {'ignore', 'raise', 'coerce'}, default 'raise'
         - If 'raise', then invalid parsing will raise an exception
         - If 'coerce', then invalid parsing will be set as NaN
@@ -59,19 +48,13 @@ def to_numeric(arg, errors='raise', downcast=None):
     Returns
     -------
     ret : numeric if parsing succeeded.
-        Return type depends on input.  Series if Series, otherwise ndarray.
-
-    See Also
-    --------
-    DataFrame.astype : Cast argument to a specified dtype.
-    to_datetime : Convert argument to datetime.
-    to_timedelta : Convert argument to timedelta.
-    numpy.ndarray.astype : Cast a numpy array to a specified type.
+        Return type depends on input.  Series if Series, otherwise ndarray
 
     Examples
     --------
     Take separate series and convert to numeric, coercing when told to
 
+    >>> import pandas as pd
     >>> s = pd.Series(['1.0', '2', -3])
     >>> pd.to_numeric(s)
     0    1.0
@@ -101,6 +84,13 @@ def to_numeric(arg, errors='raise', downcast=None):
     2    2.0
     3   -3.0
     dtype: float64
+
+    See also
+    --------
+    pandas.DataFrame.astype : Cast argument to a specified dtype.
+    pandas.to_datetime : Convert argument to datetime.
+    pandas.to_timedelta : Convert argument to timedelta.
+    numpy.ndarray.astype : Cast a numpy array to a specified type.
     """
     if downcast not in (None, 'integer', 'signed', 'unsigned', 'float'):
         raise ValueError('invalid downcasting method provided')
@@ -137,8 +127,8 @@ def to_numeric(arg, errors='raise', downcast=None):
         elif is_datetime_or_timedelta_dtype(values):
             values = values.astype(np.int64)
         else:
-            values = ensure_object(values)
-            coerce_numeric = errors not in ('ignore', 'raise')
+            values = _ensure_object(values)
+            coerce_numeric = False if errors in ('ignore', 'raise') else True
             values = lib.maybe_convert_numeric(values, set(),
                                                coerce_numeric=coerce_numeric)
 

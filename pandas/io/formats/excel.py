@@ -1,26 +1,23 @@
 """Utilities for conversion to writer-agnostic Excel representation
 """
 
-from functools import reduce
-import itertools
 import re
 import warnings
+import itertools
 
 import numpy as np
 
-from pandas.core.dtypes import missing
-from pandas.core.dtypes.common import is_float, is_scalar
-from pandas.core.dtypes.generic import ABCMultiIndex, ABCPeriodIndex
-
-from pandas import Index
-import pandas.core.common as com
-
+from pandas.compat import reduce
 from pandas.io.formats.css import CSSResolver, CSSWarning
-from pandas.io.formats.format import get_level_lengths
 from pandas.io.formats.printing import pprint_thing
+import pandas.core.common as com
+from pandas.core.dtypes.common import is_float, is_scalar
+from pandas.core.dtypes import missing
+from pandas import Index, MultiIndex, PeriodIndex
+from pandas.io.formats.common import get_level_lengths
 
 
-class ExcelCell:
+class ExcelCell(object):
     __fields__ = ('row', 'col', 'val', 'style', 'mergestart', 'mergeend')
     __slots__ = __fields__
 
@@ -34,7 +31,16 @@ class ExcelCell:
         self.mergeend = mergeend
 
 
-class CSSToExcelConverter:
+header_style = {"font": {"bold": True},
+                "borders": {"top": "thin",
+                            "right": "thin",
+                            "bottom": "thin",
+                            "left": "thin"},
+                "alignment": {"horizontal": "center",
+                              "vertical": "top"}}
+
+
+class CSSToExcelConverter(object):
     """A callable for converting CSS declarations to ExcelWriter styles
 
     Supports parts of CSS 2.2, with minimal CSS 3.0 support (e.g. text-shadow),
@@ -57,7 +63,8 @@ class CSSToExcelConverter:
 
     def __init__(self, inherited=None):
         if inherited is not None:
-            inherited = self.compute_css(inherited)
+            inherited = self.compute_css(inherited,
+                                         self.compute_css.INITIAL_STYLE)
 
         self.inherited = inherited
 
@@ -88,8 +95,8 @@ class CSSToExcelConverter:
             'border': self.build_border(props),
             'fill': self.build_fill(props),
             'font': self.build_font(props),
-            'number_format': self.build_number_format(props),
         }
+        # TODO: support number format
         # TODO: handle cell width and height: needs support in pandas.io.excel
 
         def remove_none(d):
@@ -304,11 +311,8 @@ class CSSToExcelConverter:
             warnings.warn('Unhandled color format: {val!r}'.format(val=val),
                           CSSWarning)
 
-    def build_number_format(self, props):
-        return {'format_code': props.get('number-format')}
 
-
-class ExcelFormatter:
+class ExcelFormatter(object):
     """
     Class for formatting a DataFrame to a list of ExcelCells,
 
@@ -379,16 +383,6 @@ class ExcelFormatter:
         self.merge_cells = merge_cells
         self.inf_rep = inf_rep
 
-    @property
-    def header_style(self):
-        return {"font": {"bold": True},
-                "borders": {"top": "thin",
-                            "right": "thin",
-                            "bottom": "thin",
-                            "left": "thin"},
-                "alignment": {"horizontal": "center",
-                              "vertical": "top"}}
-
     def _format_value(self, val):
         if is_scalar(val) and missing.isna(val):
             val = self.na_rep
@@ -420,31 +414,31 @@ class ExcelFormatter:
         coloffset = 0
         lnum = 0
 
-        if self.index and isinstance(self.df.index, ABCMultiIndex):
+        if self.index and isinstance(self.df.index, MultiIndex):
             coloffset = len(self.df.index[0]) - 1
 
         if self.merge_cells:
             # Format multi-index as a merged cells.
             for lnum in range(len(level_lengths)):
                 name = columns.names[lnum]
-                yield ExcelCell(lnum, coloffset, name, self.header_style)
+                yield ExcelCell(lnum, coloffset, name, header_style)
 
-            for lnum, (spans, levels, level_codes) in enumerate(zip(
-                    level_lengths, columns.levels, columns.codes)):
-                values = levels.take(level_codes)
+            for lnum, (spans, levels, labels) in enumerate(zip(
+                    level_lengths, columns.levels, columns.labels)):
+                values = levels.take(labels)
                 for i in spans:
                     if spans[i] > 1:
                         yield ExcelCell(lnum, coloffset + i + 1, values[i],
-                                        self.header_style, lnum,
+                                        header_style, lnum,
                                         coloffset + i + spans[i])
                     else:
                         yield ExcelCell(lnum, coloffset + i + 1, values[i],
-                                        self.header_style)
+                                        header_style)
         else:
             # Format in legacy format with dots to indicate levels.
             for i, values in enumerate(zip(*level_strs)):
                 v = ".".join(map(pprint_thing, values))
-                yield ExcelCell(lnum, coloffset + i + 1, v, self.header_style)
+                yield ExcelCell(lnum, coloffset + i + 1, v, header_style)
 
         self.rowcounter = lnum
 
@@ -455,7 +449,7 @@ class ExcelFormatter:
 
             if self.index:
                 coloffset = 1
-                if isinstance(self.df.index, ABCMultiIndex):
+                if isinstance(self.df.index, MultiIndex):
                     coloffset = len(self.df.index[0])
 
             colnames = self.columns
@@ -469,10 +463,10 @@ class ExcelFormatter:
 
             for colindex, colname in enumerate(colnames):
                 yield ExcelCell(self.rowcounter, colindex + coloffset, colname,
-                                self.header_style)
+                                header_style)
 
     def _format_header(self):
-        if isinstance(self.columns, ABCMultiIndex):
+        if isinstance(self.columns, MultiIndex):
             gen = self._format_header_mi()
         else:
             gen = self._format_header_regular()
@@ -482,15 +476,14 @@ class ExcelFormatter:
             row = [x if x is not None else ''
                    for x in self.df.index.names] + [''] * len(self.columns)
             if reduce(lambda x, y: x and y, map(lambda x: x != '', row)):
-                gen2 = (ExcelCell(self.rowcounter, colindex, val,
-                                  self.header_style)
+                gen2 = (ExcelCell(self.rowcounter, colindex, val, header_style)
                         for colindex, val in enumerate(row))
                 self.rowcounter += 1
         return itertools.chain(gen, gen2)
 
     def _format_body(self):
 
-        if isinstance(self.df.index, ABCMultiIndex):
+        if isinstance(self.df.index, MultiIndex):
             return self._format_hierarchical_rows()
         else:
             return self._format_regular_rows()
@@ -514,21 +507,20 @@ class ExcelFormatter:
             else:
                 index_label = self.df.index.names[0]
 
-            if isinstance(self.columns, ABCMultiIndex):
+            if isinstance(self.columns, MultiIndex):
                 self.rowcounter += 1
 
             if index_label and self.header is not False:
                 yield ExcelCell(self.rowcounter - 1, 0, index_label,
-                                self.header_style)
+                                header_style)
 
             # write index_values
             index_values = self.df.index
-            if isinstance(self.df.index, ABCPeriodIndex):
+            if isinstance(self.df.index, PeriodIndex):
                 index_values = self.df.index.to_timestamp()
 
             for idx, idxval in enumerate(index_values):
-                yield ExcelCell(self.rowcounter + idx, 0, idxval,
-                                self.header_style)
+                yield ExcelCell(self.rowcounter + idx, 0, idxval, header_style)
 
             coloffset = 1
         else:
@@ -556,7 +548,7 @@ class ExcelFormatter:
             # with index names (blank if None) for
             # unambigous round-trip, unless not merging,
             # in which case the names all go on one row Issue #11328
-            if isinstance(self.columns, ABCMultiIndex) and self.merge_cells:
+            if isinstance(self.columns, MultiIndex) and self.merge_cells:
                 self.rowcounter += 1
 
             # if index labels are not empty go ahead and dump
@@ -564,7 +556,7 @@ class ExcelFormatter:
 
                 for cidx, name in enumerate(index_labels):
                     yield ExcelCell(self.rowcounter - 1, cidx, name,
-                                    self.header_style)
+                                    header_style)
 
             if self.merge_cells:
                 # Format hierarchical rows as merged cells.
@@ -572,23 +564,23 @@ class ExcelFormatter:
                                                   names=False)
                 level_lengths = get_level_lengths(level_strs)
 
-                for spans, levels, level_codes in zip(level_lengths,
-                                                      self.df.index.levels,
-                                                      self.df.index.codes):
+                for spans, levels, labels in zip(level_lengths,
+                                                 self.df.index.levels,
+                                                 self.df.index.labels):
 
-                    values = levels.take(level_codes,
+                    values = levels.take(labels,
                                          allow_fill=levels._can_hold_na,
                                          fill_value=True)
 
                     for i in spans:
                         if spans[i] > 1:
                             yield ExcelCell(self.rowcounter + i, gcolidx,
-                                            values[i], self.header_style,
+                                            values[i], header_style,
                                             self.rowcounter + i + spans[i] - 1,
                                             gcolidx)
                         else:
                             yield ExcelCell(self.rowcounter + i, gcolidx,
-                                            values[i], self.header_style)
+                                            values[i], header_style)
                     gcolidx += 1
 
             else:
@@ -596,7 +588,7 @@ class ExcelFormatter:
                 for indexcolvals in zip(*self.df.index):
                     for idx, indexcolval in enumerate(indexcolvals):
                         yield ExcelCell(self.rowcounter + idx, gcolidx,
-                                        indexcolval, self.header_style)
+                                        indexcolval, header_style)
                     gcolidx += 1
 
         for cell in self._generate_body(gcolidx):

@@ -1,6 +1,5 @@
-from pandas._libs.khash cimport (
-    kh_int64_t, kh_uint64_t, kh_float64_t, kh_pymap_t, kh_str_t, uint64_t,
-    int64_t, float64_t)
+from khash cimport (kh_int64_t, kh_uint64_t, kh_float64_t, kh_pymap_t,
+                    kh_str_t, uint64_t, int64_t, float64_t)
 from numpy cimport ndarray
 
 # prototypes for sharing

@@ -1,13 +1,16 @@
-from itertools import product
+# -*- coding: utf-8 -*-
+from __future__ import print_function
 
 import numpy as np
 import pytest
 
-from pandas import DataFrame, MultiIndex, Period, Series, Timedelta, Timestamp
-from pandas.util.testing import assert_frame_equal, assert_series_equal
+from pandas import (DataFrame, Series, MultiIndex, Timestamp, Timedelta,
+                    Period)
+from pandas.util.testing import (assert_series_equal, assert_frame_equal)
+from pandas.compat import (range, product as cart_product)
 
 
-class TestCounting:
+class TestCounting(object):
 
     def test_cumcount(self):
         df = DataFrame([['a'], ['a'], ['a'], ['b'], ['a']], columns=['A'])
@@ -166,7 +169,7 @@ class TestCounting:
 
     def test_ngroup_cumcount_pair(self):
         # brute force comparison for all small series
-        for p in product(range(3), repeat=4):
+        for p in cart_product(range(3), repeat=4):
             df = DataFrame({'a': p})
             g = df.groupby(['a'])
 
@@ -209,13 +212,3 @@ class TestCounting:
         expected = DataFrame({'y': [2, 1]}, index=['a', 'b'])
         expected.index.name = "x"
         assert_frame_equal(expected, res)
-
-    def test_count_with_only_nans_in_first_group(self):
-        # GH21956
-        df = DataFrame({'A': [np.nan, np.nan], 'B': ['a', 'b'], 'C': [1, 2]})
-        result = df.groupby(['A', 'B']).C.count()
-        mi = MultiIndex(levels=[[], ['a', 'b']],
-                        codes=[[], []],
-                        names=['A', 'B'])
-        expected = Series([], index=mi, dtype=np.int64, name='C')
-        assert_series_equal(result, expected, check_index_type=False)

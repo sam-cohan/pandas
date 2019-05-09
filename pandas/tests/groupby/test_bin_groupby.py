@@ -1,15 +1,15 @@
-import numpy as np
-from numpy import nan
+# -*- coding: utf-8 -*-
+
 import pytest
 
-from pandas._libs import groupby, lib, reduction
+from numpy import nan
+import numpy as np
 
-from pandas.core.dtypes.common import ensure_int64
-
+from pandas.core.dtypes.common import _ensure_int64
 from pandas import Index, isna
-from pandas.core.groupby.ops import generate_bins_generic
-import pandas.util.testing as tm
 from pandas.util.testing import assert_almost_equal
+import pandas.util.testing as tm
+from pandas._libs import lib, groupby, reduction
 
 
 def test_series_grouper():
@@ -46,7 +46,7 @@ def test_series_bin_grouper():
     assert_almost_equal(counts, exp_counts)
 
 
-class TestBinGroupers:
+class TestBinGroupers(object):
 
     def setup_method(self, method):
         self.obj = np.random.randn(10, 1)
@@ -54,6 +54,7 @@ class TestBinGroupers:
         self.bins = np.array([3, 6], dtype=np.int64)
 
     def test_generate_bins(self):
+        from pandas.core.groupby import generate_bins_generic
         values = np.array([1, 2, 3, 4, 5, 6], dtype=np.int64)
         binner = np.array([0, 3, 6, 9], dtype=np.int64)
 
@@ -71,18 +72,15 @@ class TestBinGroupers:
             bins = func(values, binner, closed='right')
             assert ((bins == np.array([3, 6])).all())
 
-        msg = "Invalid length for values or for binner"
-        with pytest.raises(ValueError, match=msg):
-            generate_bins_generic(values, [], 'right')
-        with pytest.raises(ValueError, match=msg):
-            generate_bins_generic(values[:0], binner, 'right')
+        pytest.raises(ValueError, generate_bins_generic, values, [],
+                      'right')
+        pytest.raises(ValueError, generate_bins_generic, values[:0],
+                      binner, 'right')
 
-        msg = "Values falls before first bin"
-        with pytest.raises(ValueError, match=msg):
-            generate_bins_generic(values, [4], 'right')
-        msg = "Values falls after last bin"
-        with pytest.raises(ValueError, match=msg):
-            generate_bins_generic(values, [-3, -1], 'right')
+        pytest.raises(ValueError, generate_bins_generic, values, [4],
+                      'right')
+        pytest.raises(ValueError, generate_bins_generic, values, [-3, -1],
+                      'right')
 
 
 def test_group_ohlc():
@@ -92,8 +90,8 @@ def test_group_ohlc():
         bins = np.array([6, 12, 20])
         out = np.zeros((3, 4), dtype)
         counts = np.zeros(len(out), dtype=np.int64)
-        labels = ensure_int64(np.repeat(np.arange(3),
-                                        np.diff(np.r_[0, bins])))
+        labels = _ensure_int64(np.repeat(np.arange(3),
+                                         np.diff(np.r_[0, bins])))
 
         func = getattr(groupby, 'group_ohlc_%s' % dtype)
         func(out, counts, obj[:, None], labels)
@@ -119,11 +117,11 @@ def test_group_ohlc():
     _check('float64')
 
 
-class TestMoments:
+class TestMoments(object):
     pass
 
 
-class TestReducer:
+class TestReducer(object):
 
     def test_int_index(self):
         from pandas.core.series import Series

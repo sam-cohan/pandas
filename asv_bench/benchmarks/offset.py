@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import warnings
 from datetime import datetime
 
@@ -31,7 +32,9 @@ other_offsets = [pd.offsets.YearEnd(), pd.offsets.YearBegin(),
 offsets = non_apply + other_offsets
 
 
-class ApplyIndex:
+class ApplyIndex(object):
+
+    goal_time = 0.2
 
     params = other_offsets
     param_names = ['offset']
@@ -44,7 +47,9 @@ class ApplyIndex:
         offset.apply_index(self.rng)
 
 
-class OnOffset:
+class OnOffset(object):
+
+    goal_time = 0.2
 
     params = offsets
     param_names = ['offset']
@@ -60,8 +65,9 @@ class OnOffset:
             offset.onOffset(date)
 
 
-class OffsetSeriesArithmetic:
+class OffsetSeriesArithmetic(object):
 
+    goal_time = 0.2
     params = offsets
     param_names = ['offset']
 
@@ -75,8 +81,9 @@ class OffsetSeriesArithmetic:
             self.data + offset
 
 
-class OffsetDatetimeIndexArithmetic:
+class OffsetDatetimeIndexArithmetic(object):
 
+    goal_time = 0.2
     params = offsets
     param_names = ['offset']
 
@@ -89,8 +96,9 @@ class OffsetDatetimeIndexArithmetic:
             self.data + offset
 
 
-class OffestDatetimeArithmetic:
+class OffestDatetimeArithmetic(object):
 
+    goal_time = 0.2
     params = offsets
     param_names = ['offset']
 

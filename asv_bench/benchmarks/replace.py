@@ -1,9 +1,12 @@
 import numpy as np
 import pandas as pd
 
+from .pandas_vb_common import setup  # noqa
 
-class FillNa:
 
+class FillNa(object):
+
+    goal_time = 0.2
     params = [True, False]
     param_names = ['inplace']
 
@@ -21,8 +24,9 @@ class FillNa:
         self.ts.replace(np.nan, 0.0, inplace=inplace)
 
 
-class ReplaceDict:
+class ReplaceDict(object):
 
+    goal_time = 0.2
     params = [True, False]
     param_names = ['inplace']
 
@@ -36,8 +40,9 @@ class ReplaceDict:
         self.s.replace(self.to_rep, inplace=inplace)
 
 
-class Convert:
+class Convert(object):
 
+    goal_time = 0.5
     params = (['DataFrame', 'Series'], ['Timestamp', 'Timedelta'])
     param_names = ['constructor', 'replace_data']
 
@@ -51,6 +56,3 @@ class Convert:
 
     def time_replace(self, constructor, replace_data):
         self.data.replace(self.to_replace)
-
-
-from .pandas_vb_common import setup  # noqa: F401

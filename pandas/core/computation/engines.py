@@ -4,11 +4,14 @@ Engine classes for :func:`~pandas.eval`
 
 import abc
 
+from pandas import compat
+from pandas.compat import map
+import pandas.io.formats.printing as printing
 from pandas.core.computation.align import _align, _reconstruct_object
 from pandas.core.computation.ops import (
-    UndefinedVariableError, _mathops, _reductions)
+    UndefinedVariableError,
+    _mathops, _reductions)
 
-import pandas.io.formats.printing as printing
 
 _ne_builtins = frozenset(_mathops + _reductions)
 
@@ -35,8 +38,11 @@ def _check_ne_builtin_clash(expr):
                                      .format(expr=expr, s=s))
 
 
-class AbstractEngine(metaclass=abc.ABCMeta):
+class AbstractEngine(object):
+
     """Object serving as a base class for all engines."""
+
+    __metaclass__ = abc.ABCMeta
 
     has_neg_frac = False
 
@@ -98,10 +104,10 @@ class NumExprEngine(AbstractEngine):
     has_neg_frac = True
 
     def __init__(self, expr):
-        super().__init__(expr)
+        super(NumExprEngine, self).__init__(expr)
 
     def convert(self):
-        return str(super().convert())
+        return str(super(NumExprEngine, self).convert())
 
     def _evaluate(self):
         import numexpr as ne
@@ -120,7 +126,7 @@ class NumExprEngine(AbstractEngine):
             try:
                 msg = e.message
             except AttributeError:
-                msg = str(e)
+                msg = compat.text_type(e)
             raise UndefinedVariableError(msg)
 
 
@@ -133,7 +139,7 @@ class PythonEngine(AbstractEngine):
     has_neg_frac = False
 
     def __init__(self, expr):
-        super().__init__(expr)
+        super(PythonEngine, self).__init__(expr)
 
     def evaluate(self):
         return self.expr()

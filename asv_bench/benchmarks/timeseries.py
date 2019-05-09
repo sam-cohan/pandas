@@ -1,6 +1,6 @@
+import warnings
 from datetime import timedelta
 
-import dateutil
 import numpy as np
 from pandas import to_datetime, date_range, Series, DataFrame, period_range
 from pandas.tseries.frequencies import infer_freq
@@ -9,10 +9,13 @@ try:
 except ImportError:
     from pandas.tseries.converter import DatetimeConverter
 
+from .pandas_vb_common import setup  # noqa
 
-class DatetimeIndex:
 
-    params = ['dst', 'repeated', 'tz_aware', 'tz_local', 'tz_naive']
+class DatetimeIndex(object):
+
+    goal_time = 0.2
+    params = ['dst', 'repeated', 'tz_aware', 'tz_naive']
     param_names = ['index_type']
 
     def setup(self, index_type):
@@ -26,10 +29,6 @@ class DatetimeIndex:
                                           periods=N,
                                           freq='s',
                                           tz='US/Eastern'),
-                   'tz_local': date_range(start='2000',
-                                          periods=N,
-                                          freq='s',
-                                          tz=dateutil.tz.tzlocal()),
                    'tz_naive': date_range(start='2000',
                                           periods=N,
                                           freq='s')}
@@ -60,12 +59,11 @@ class DatetimeIndex:
         self.index.to_pydatetime()
 
 
-class TzLocalize:
+class TzLocalize(object):
 
-    params = [None, 'US/Eastern', 'UTC', dateutil.tz.tzutc()]
-    param_names = 'tz'
+    goal_time = 0.2
 
-    def setup(self, tz):
+    def setup(self):
         dst_rng = date_range(start='10/29/2000 1:00:00',
                              end='10/29/2000 1:59:59', freq='S')
         self.index = date_range(start='10/29/2000',
@@ -76,12 +74,14 @@ class TzLocalize:
                                                   end='10/29/2000 3:00:00',
                                                   freq='S'))
 
-    def time_infer_dst(self, tz):
-        self.index.tz_localize(tz, ambiguous='infer')
+    def time_infer_dst(self):
+        with warnings.catch_warnings(record=True):
+            self.index.tz_localize('US/Eastern', infer_dst=True)
 
 
-class ResetIndex:
+class ResetIndex(object):
 
+    goal_time = 0.2
     params = [None, 'US/Eastern']
     param_names = 'tz'
 
@@ -93,8 +93,9 @@ class ResetIndex:
         self.df.reset_index()
 
 
-class Factorize:
+class Factorize(object):
 
+    goal_time = 0.2
     params = [None, 'Asia/Tokyo']
     param_names = 'tz'
 
@@ -107,8 +108,9 @@ class Factorize:
         self.dti.factorize()
 
 
-class InferFreq:
+class InferFreq(object):
 
+    goal_time = 0.2
     params = [None, 'D', 'B']
     param_names = ['freq']
 
@@ -123,7 +125,9 @@ class InferFreq:
         infer_freq(self.idx)
 
 
-class TimeDatetimeConverter:
+class TimeDatetimeConverter(object):
+
+    goal_time = 0.2
 
     def setup(self):
         N = 100000
@@ -133,8 +137,9 @@ class TimeDatetimeConverter:
         DatetimeConverter.convert(self.rng, None, None)
 
 
-class Iteration:
+class Iteration(object):
 
+    goal_time = 0.2
     params = [date_range, period_range]
     param_names = ['time_index']
 
@@ -153,8 +158,9 @@ class Iteration:
                 break
 
 
-class ResampleDataFrame:
+class ResampleDataFrame(object):
 
+    goal_time = 0.2
     params = ['max', 'mean', 'min']
     param_names = ['method']
 
@@ -167,8 +173,9 @@ class ResampleDataFrame:
         self.resample()
 
 
-class ResampleSeries:
+class ResampleSeries(object):
 
+    goal_time = 0.2
     params = (['period', 'datetime'], ['5min', '1D'], ['mean', 'ohlc'])
     param_names = ['index', 'freq', 'method']
 
@@ -187,8 +194,10 @@ class ResampleSeries:
         self.resample()
 
 
-class ResampleDatetetime64:
+class ResampleDatetetime64(object):
     # GH 7754
+    goal_time = 0.2
+
     def setup(self):
         rng3 = date_range(start='2000-01-01 00:00:00',
                           end='2000-01-01 10:00:00', freq='555000U')
@@ -198,8 +207,9 @@ class ResampleDatetetime64:
         self.dt_ts.resample('1S').last()
 
 
-class AsOf:
+class AsOf(object):
 
+    goal_time = 0.2
     params = ['DataFrame', 'Series']
     param_names = ['constructor']
 
@@ -245,8 +255,9 @@ class AsOf:
         self.ts3.asof(self.date_last)
 
 
-class SortIndex:
+class SortIndex(object):
 
+    goal_time = 0.2
     params = [True, False]
     param_names = ['monotonic']
 
@@ -264,7 +275,9 @@ class SortIndex:
         self.s[:10000]
 
 
-class IrregularOps:
+class IrregularOps(object):
+
+    goal_time = 0.2
 
     def setup(self):
         N = 10**5
@@ -277,7 +290,9 @@ class IrregularOps:
         self.left + self.right
 
 
-class Lookup:
+class Lookup(object):
+
+    goal_time = 0.2
 
     def setup(self):
         N = 1500000
@@ -290,7 +305,9 @@ class Lookup:
         self.ts.index._cleanup()
 
 
-class ToDatetimeYYYYMMDD:
+class ToDatetimeYYYYMMDD(object):
+
+    goal_time = 0.2
 
     def setup(self):
         rng = date_range(start='1/1/2000', periods=10000, freq='D')
@@ -300,7 +317,9 @@ class ToDatetimeYYYYMMDD:
         to_datetime(self.stringsD, format='%Y%m%d')
 
 
-class ToDatetimeISO8601:
+class ToDatetimeISO8601(object):
+
+    goal_time = 0.2
 
     def setup(self):
         rng = date_range(start='1/1/2000', periods=20000, freq='H')
@@ -325,33 +344,9 @@ class ToDatetimeISO8601:
         to_datetime(self.strings_tz_space)
 
 
-class ToDatetimeNONISO8601:
+class ToDatetimeFormat(object):
 
-    def setup(self):
-        N = 10000
-        half = int(N / 2)
-        ts_string_1 = 'March 1, 2018 12:00:00+0400'
-        ts_string_2 = 'March 1, 2018 12:00:00+0500'
-        self.same_offset = [ts_string_1] * N
-        self.diff_offset = [ts_string_1] * half + [ts_string_2] * half
-
-    def time_same_offset(self):
-        to_datetime(self.same_offset)
-
-    def time_different_offset(self):
-        to_datetime(self.diff_offset)
-
-
-class ToDatetimeFormatQuarters:
-
-    def setup(self):
-        self.s = Series(['2Q2005', '2Q05', '2005Q1', '05Q1'] * 10000)
-
-    def time_infer_quarter(self):
-        to_datetime(self.s)
-
-
-class ToDatetimeFormat:
+    goal_time = 0.2
 
     def setup(self):
         self.s = Series(['19MAY11', '19MAY11:00:00:00'] * 100000)
@@ -364,8 +359,9 @@ class ToDatetimeFormat:
         to_datetime(self.s, format='%d%b%y', exact=False)
 
 
-class ToDatetimeCache:
+class ToDatetimeCache(object):
 
+    goal_time = 0.2
     params = [True, False]
     param_names = ['cache']
 
@@ -392,37 +388,14 @@ class ToDatetimeCache:
         to_datetime(self.dup_string_with_tz, cache=cache)
 
 
-class DatetimeAccessor:
+class DatetimeAccessor(object):
 
-    params = [None, 'US/Eastern', 'UTC', dateutil.tz.tzutc()]
-    param_names = 'tz'
-
-    def setup(self, tz):
+    def setup(self):
         N = 100000
-        self.series = Series(
-            date_range(start='1/1/2000', periods=N, freq='T', tz=tz)
-        )
+        self.series = Series(date_range(start='1/1/2000', periods=N, freq='T'))
 
-    def time_dt_accessor(self, tz):
+    def time_dt_accessor(self):
         self.series.dt
 
-    def time_dt_accessor_normalize(self, tz):
+    def time_dt_accessor_normalize(self):
         self.series.dt.normalize()
-
-    def time_dt_accessor_month_name(self, tz):
-        self.series.dt.month_name()
-
-    def time_dt_accessor_day_name(self, tz):
-        self.series.dt.day_name()
-
-    def time_dt_accessor_time(self, tz):
-        self.series.dt.time
-
-    def time_dt_accessor_date(self, tz):
-        self.series.dt.date
-
-    def time_dt_accessor_year(self, tz):
-        self.series.dt.year
-
-
-from .pandas_vb_common import setup  # noqa: F401

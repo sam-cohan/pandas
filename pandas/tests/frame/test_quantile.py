@@ -1,11 +1,19 @@
-import numpy as np
-import pytest
+# -*- coding: utf-8 -*-
 
+from __future__ import print_function
+
+
+import pytest
+import numpy as np
+
+from pandas import (DataFrame, Series, Timestamp, _np_version_under1p11)
 import pandas as pd
-from pandas import DataFrame, Series, Timestamp
-from pandas.tests.frame.common import TestData
+
+from pandas.util.testing import assert_series_equal, assert_frame_equal
+
 import pandas.util.testing as tm
-from pandas.util.testing import assert_frame_equal, assert_series_equal
+
+from pandas.tests.frame.common import TestData
 
 
 class TestDataFrameQuantile(TestData):
@@ -64,8 +72,9 @@ class TestDataFrameQuantile(TestData):
         assert_series_equal(result, expected)
 
         # must raise
-        with pytest.raises(TypeError):
+        def f():
             df.quantile(.5, axis=1, numeric_only=False)
+        pytest.raises(TypeError, f)
 
     def test_quantile_axis_parameter(self):
         # GH 9543/9544
@@ -88,14 +97,8 @@ class TestDataFrameQuantile(TestData):
         result = df.quantile(.5, axis="columns")
         assert_series_equal(result, expected)
 
-        msg = ("No axis named -1 for object type"
-               " <class 'pandas.core.frame.DataFrame'>")
-        with pytest.raises(ValueError, match=msg):
-            df.quantile(0.1, axis=-1)
-        msg = ("No axis named column for object type"
-               " <class 'pandas.core.frame.DataFrame'>")
-        with pytest.raises(ValueError, match=msg):
-            df.quantile(0.1, axis="column")
+        pytest.raises(ValueError, df.quantile, 0.1, axis=-1)
+        pytest.raises(ValueError, df.quantile, 0.1, axis="column")
 
     def test_quantile_interpolation(self):
         # see gh-10174
@@ -151,8 +154,12 @@ class TestDataFrameQuantile(TestData):
         result = df.quantile([.25, .5], interpolation='midpoint')
 
         # https://github.com/numpy/numpy/issues/7163
-        expected = DataFrame([[1.5, 1.5, 1.5], [2.0, 2.0, 2.0]],
-                             index=[.25, .5], columns=['a', 'b', 'c'])
+        if _np_version_under1p11:
+            expected = DataFrame([[1.5, 1.5, 1.5], [2.5, 2.5, 2.5]],
+                                 index=[.25, .5], columns=['a', 'b', 'c'])
+        else:
+            expected = DataFrame([[1.5, 1.5, 1.5], [2.0, 2.0, 2.0]],
+                                 index=[.25, .5], columns=['a', 'b', 'c'])
         assert_frame_equal(result, expected)
 
     def test_quantile_multi(self):
@@ -217,7 +224,7 @@ class TestDataFrameQuantile(TestData):
     def test_quantile_invalid(self):
         msg = 'percentiles should all be in the interval \\[0, 1\\]'
         for invalid in [-1, 2, [0.5, -1], [0.5, 2]]:
-            with pytest.raises(ValueError, match=msg):
+            with tm.assert_raises_regex(ValueError, msg):
                 self.tsframe.quantile(invalid)
 
     def test_quantile_box(self):

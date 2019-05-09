@@ -1,30 +1,69 @@
-from collections import OrderedDict
-import contextlib
-from datetime import date, datetime, time, timedelta
+# pylint: disable=E1101
+import os
+import sys
+import warnings
+from datetime import datetime, date, time, timedelta
 from distutils.version import LooseVersion
 from functools import partial
-from io import BytesIO
-import os
-import warnings
+from warnings import catch_warnings
+from collections import OrderedDict
 
 import numpy as np
-from numpy import nan
 import pytest
-
-from pandas.compat import PY36
-import pandas.util._test_decorators as td
+from numpy import nan
 
 import pandas as pd
-from pandas import DataFrame, Index, MultiIndex, Series, get_option, set_option
 import pandas.util.testing as tm
-from pandas.util.testing import ensure_clean, makeCustomDataframe as mkdf
-
+import pandas.util._test_decorators as td
+from pandas import DataFrame, Index, MultiIndex
+from pandas.compat import u, range, map, BytesIO, iteritems
+from pandas.core.config import set_option, get_option
 from pandas.io.common import URLError
 from pandas.io.excel import (
-    ExcelFile, ExcelWriter, _OpenpyxlWriter, _XlsxWriter, _XlwtWriter,
-    read_excel, register_writer)
+    ExcelFile, ExcelWriter, read_excel, _XlwtWriter, _OpenpyxlWriter,
+    register_writer, _XlsxWriter
+)
 from pandas.io.formats.excel import ExcelFormatter
 from pandas.io.parsers import read_csv
+from pandas.util.testing import ensure_clean, makeCustomDataframe as mkdf
+
+
+def _skip_if_no_xlrd():
+    try:
+        import xlrd
+        ver = tuple(map(int, xlrd.__VERSION__.split(".")[:2]))
+        if ver < (0, 9):
+            pytest.skip('xlrd < 0.9, skipping')
+    except ImportError:
+        pytest.skip('xlrd not installed, skipping')
+
+
+def _skip_if_no_xlwt():
+    try:
+        import xlwt  # NOQA
+    except ImportError:
+        pytest.skip('xlwt not installed, skipping')
+
+
+def _skip_if_no_openpyxl():
+    try:
+        import openpyxl  # NOQA
+    except ImportError:
+        pytest.skip('openpyxl not installed, skipping')
+
+
+def _skip_if_no_xlsxwriter():
+    try:
+        import xlsxwriter  # NOQA
+    except ImportError:
+        pytest.skip('xlsxwriter not installed, skipping')
+
+
+def _skip_if_no_excelsuite():
+    _skip_if_no_xlrd()
+    _skip_if_no_xlwt()
+    _skip_if_no_openpyxl()
+
 
 _seriesd = tm.getSeriesData()
 _tsd = tm.getTimeSeriesData()
@@ -35,26 +74,10 @@ _mixed_frame = _frame.copy()
 _mixed_frame['foo'] = 'bar'
 
 
-@contextlib.contextmanager
-def ignore_xlrd_time_clock_warning():
-    """
-    Context manager to ignore warnings raised by the xlrd library,
-    regarding the deprecation of `time.clock` in Python 3.7.
-    """
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            action='ignore',
-            message='time.clock has been deprecated',
-            category=DeprecationWarning)
-        yield
+class SharedItems(object):
 
-
-@td.skip_if_no('xlrd', '1.0.0')
-class SharedItems:
-
-    @pytest.fixture(autouse=True)
-    def setup_method(self, datapath):
-        self.dirpath = datapath("io", "data")
+    def setup_method(self, method):
+        self.dirpath = tm.get_data_path()
         self.frame = _frame.copy()
         self.frame2 = _frame2.copy()
         self.tsframe = _tsframe.copy()
@@ -63,6 +86,7 @@ class SharedItems:
     def get_csv_refdf(self, basename):
         """
         Obtain the reference data from read_csv with the Python engine.
+        Test data path is defined by pandas.util.testing.get_data_path()
 
         Parameters
         ----------
@@ -79,9 +103,10 @@ class SharedItems:
         dfref = read_csv(pref, index_col=0, parse_dates=True, engine='python')
         return dfref
 
-    def get_excelfile(self, basename, ext):
+    def get_excelfile(self, basename):
         """
-        Return test data ExcelFile instance.
+        Return test data ExcelFile instance. Test data path is defined by
+        pandas.util.testing.get_data_path()
 
         Parameters
         ----------
@@ -94,11 +119,12 @@ class SharedItems:
 
         excel : io.excel.ExcelFile
         """
-        return ExcelFile(os.path.join(self.dirpath, basename + ext))
+        return ExcelFile(os.path.join(self.dirpath, basename + self.ext))
 
-    def get_exceldf(self, basename, ext, *args, **kwds):
+    def get_exceldf(self, basename, *args, **kwds):
         """
-        Return test data DataFrame.
+        Return test data DataFrame. Test data path is defined by
+        pandas.util.testing.get_data_path()
 
         Parameters
         ----------
@@ -111,89 +137,74 @@ class SharedItems:
 
         df : DataFrame
         """
-        pth = os.path.join(self.dirpath, basename + ext)
+        pth = os.path.join(self.dirpath, basename + self.ext)
         return read_excel(pth, *args, **kwds)
 
 
 class ReadingTestsBase(SharedItems):
     # This is based on ExcelWriterBase
+    #
+    # Base class for test cases to run with different Excel readers.
+    # To add a reader test, define the following:
+    # 1. A check_skip function that skips your tests if your reader isn't
+    #    installed.
+    # 2. Add a property ext, which is the file extension that your reader
+    #    reades from. (needs to start with '.' so it's a valid path)
+    # 3. Add a property engine_name, which is the name of the reader class.
+    #    For the reader this is not used for anything at the moment.
 
-    @pytest.fixture(autouse=True, params=['xlrd', None])
-    def set_engine(self, request):
-        func_name = "get_exceldf"
-        old_func = getattr(self, func_name)
-        new_func = partial(old_func, engine=request.param)
-        setattr(self, func_name, new_func)
-        yield
-        setattr(self, func_name, old_func)
+    def setup_method(self, method):
+        self.check_skip()
+        super(ReadingTestsBase, self).setup_method(method)
 
-    @td.skip_if_no("xlrd", "1.0.1")  # see gh-22682
-    def test_usecols_int(self, ext):
-
-        df_ref = self.get_csv_refdf("test1")
-        df_ref = df_ref.reindex(columns=["A", "B", "C"])
-
-        # usecols as int
-        with tm.assert_produces_warning(FutureWarning,
-                                        check_stacklevel=False):
-            with ignore_xlrd_time_clock_warning():
-                df1 = self.get_exceldf("test1", ext, "Sheet1",
-                                       index_col=0, usecols=3)
-
-        # usecols as int
-        with tm.assert_produces_warning(FutureWarning,
-                                        check_stacklevel=False):
-            with ignore_xlrd_time_clock_warning():
-                df2 = self.get_exceldf("test1", ext, "Sheet2", skiprows=[1],
-                                       index_col=0, usecols=3)
-
-        # parse_cols instead of usecols, usecols as int
-        with tm.assert_produces_warning(FutureWarning,
-                                        check_stacklevel=False):
-            with ignore_xlrd_time_clock_warning():
-                df3 = self.get_exceldf("test1", ext, "Sheet2", skiprows=[1],
-                                       index_col=0, parse_cols=3)
-
-        # TODO add index to xls file)
-        tm.assert_frame_equal(df1, df_ref, check_names=False)
-        tm.assert_frame_equal(df2, df_ref, check_names=False)
-        tm.assert_frame_equal(df3, df_ref, check_names=False)
-
-    @td.skip_if_no('xlrd', '1.0.1')  # GH-22682
-    def test_usecols_list(self, ext):
+    def test_usecols_int(self):
 
         dfref = self.get_csv_refdf('test1')
-        dfref = dfref.reindex(columns=['B', 'C'])
-        df1 = self.get_exceldf('test1', ext, 'Sheet1', index_col=0,
-                               usecols=[0, 2, 3])
-        df2 = self.get_exceldf('test1', ext, 'Sheet2', skiprows=[1],
-                               index_col=0, usecols=[0, 2, 3])
+        dfref = dfref.reindex(columns=['A', 'B', 'C'])
+        df1 = self.get_exceldf('test1', 'Sheet1', index_col=0, usecols=3)
+        df2 = self.get_exceldf('test1', 'Sheet2', skiprows=[1], index_col=0,
+                               usecols=3)
 
         with tm.assert_produces_warning(FutureWarning):
-            with ignore_xlrd_time_clock_warning():
-                df3 = self.get_exceldf('test1', ext, 'Sheet2', skiprows=[1],
-                                       index_col=0, parse_cols=[0, 2, 3])
+            df3 = self.get_exceldf('test1', 'Sheet2', skiprows=[1],
+                                   index_col=0, parse_cols=3)
 
         # TODO add index to xls file)
         tm.assert_frame_equal(df1, dfref, check_names=False)
         tm.assert_frame_equal(df2, dfref, check_names=False)
         tm.assert_frame_equal(df3, dfref, check_names=False)
 
-    @td.skip_if_no('xlrd', '1.0.1')  # GH-22682
-    def test_usecols_str(self, ext):
+    def test_usecols_list(self):
+
+        dfref = self.get_csv_refdf('test1')
+        dfref = dfref.reindex(columns=['B', 'C'])
+        df1 = self.get_exceldf('test1', 'Sheet1', index_col=0,
+                               usecols=[0, 2, 3])
+        df2 = self.get_exceldf('test1', 'Sheet2', skiprows=[1], index_col=0,
+                               usecols=[0, 2, 3])
+
+        with tm.assert_produces_warning(FutureWarning):
+            df3 = self.get_exceldf('test1', 'Sheet2', skiprows=[1],
+                                   index_col=0, parse_cols=[0, 2, 3])
+
+        # TODO add index to xls file)
+        tm.assert_frame_equal(df1, dfref, check_names=False)
+        tm.assert_frame_equal(df2, dfref, check_names=False)
+        tm.assert_frame_equal(df3, dfref, check_names=False)
+
+    def test_usecols_str(self):
 
         dfref = self.get_csv_refdf('test1')
 
         df1 = dfref.reindex(columns=['A', 'B', 'C'])
-        df2 = self.get_exceldf('test1', ext, 'Sheet1', index_col=0,
+        df2 = self.get_exceldf('test1', 'Sheet1', index_col=0,
                                usecols='A:D')
-        df3 = self.get_exceldf('test1', ext, 'Sheet2', skiprows=[1],
-                               index_col=0, usecols='A:D')
+        df3 = self.get_exceldf('test1', 'Sheet2', skiprows=[1], index_col=0,
+                               usecols='A:D')
 
         with tm.assert_produces_warning(FutureWarning):
-            with ignore_xlrd_time_clock_warning():
-                df4 = self.get_exceldf('test1', ext, 'Sheet2', skiprows=[1],
-                                       index_col=0, parse_cols='A:D')
+            df4 = self.get_exceldf('test1', 'Sheet2', skiprows=[1],
+                                   index_col=0, parse_cols='A:D')
 
         # TODO add index to xls, read xls ignores index name ?
         tm.assert_frame_equal(df2, df1, check_names=False)
@@ -201,118 +212,37 @@ class ReadingTestsBase(SharedItems):
         tm.assert_frame_equal(df4, df1, check_names=False)
 
         df1 = dfref.reindex(columns=['B', 'C'])
-        df2 = self.get_exceldf('test1', ext, 'Sheet1', index_col=0,
+        df2 = self.get_exceldf('test1', 'Sheet1', index_col=0,
                                usecols='A,C,D')
-        df3 = self.get_exceldf('test1', ext, 'Sheet2', skiprows=[1],
-                               index_col=0, usecols='A,C,D')
+        df3 = self.get_exceldf('test1', 'Sheet2', skiprows=[1], index_col=0,
+                               usecols='A,C,D')
         # TODO add index to xls file
         tm.assert_frame_equal(df2, df1, check_names=False)
         tm.assert_frame_equal(df3, df1, check_names=False)
 
         df1 = dfref.reindex(columns=['B', 'C'])
-        df2 = self.get_exceldf('test1', ext, 'Sheet1', index_col=0,
+        df2 = self.get_exceldf('test1', 'Sheet1', index_col=0,
                                usecols='A,C:D')
-        df3 = self.get_exceldf('test1', ext, 'Sheet2', skiprows=[1],
-                               index_col=0, usecols='A,C:D')
+        df3 = self.get_exceldf('test1', 'Sheet2', skiprows=[1], index_col=0,
+                               usecols='A,C:D')
         tm.assert_frame_equal(df2, df1, check_names=False)
         tm.assert_frame_equal(df3, df1, check_names=False)
 
-    @pytest.mark.parametrize("usecols", [
-        [0, 1, 3], [0, 3, 1],
-        [1, 0, 3], [1, 3, 0],
-        [3, 0, 1], [3, 1, 0],
-    ])
-    def test_usecols_diff_positional_int_columns_order(self, ext, usecols):
-        expected = self.get_csv_refdf("test1")[["A", "C"]]
-        result = self.get_exceldf("test1", ext, "Sheet1",
-                                  index_col=0, usecols=usecols)
-        tm.assert_frame_equal(result, expected, check_names=False)
+    def test_excel_stop_iterator(self):
 
-    @pytest.mark.parametrize("usecols", [
-        ["B", "D"], ["D", "B"]
-    ])
-    def test_usecols_diff_positional_str_columns_order(self, ext, usecols):
-        expected = self.get_csv_refdf("test1")[["B", "D"]]
-        expected.index = range(len(expected))
-
-        result = self.get_exceldf("test1", ext, "Sheet1", usecols=usecols)
-        tm.assert_frame_equal(result, expected, check_names=False)
-
-    def test_read_excel_without_slicing(self, ext):
-        expected = self.get_csv_refdf("test1")
-        result = self.get_exceldf("test1", ext, "Sheet1", index_col=0)
-        tm.assert_frame_equal(result, expected, check_names=False)
-
-    def test_usecols_excel_range_str(self, ext):
-        expected = self.get_csv_refdf("test1")[["C", "D"]]
-        result = self.get_exceldf("test1", ext, "Sheet1",
-                                  index_col=0, usecols="A,D:E")
-        tm.assert_frame_equal(result, expected, check_names=False)
-
-    def test_usecols_excel_range_str_invalid(self, ext):
-        msg = "Invalid column name: E1"
-
-        with pytest.raises(ValueError, match=msg):
-            self.get_exceldf("test1", ext, "Sheet1", usecols="D:E1")
-
-    def test_index_col_label_error(self, ext):
-        msg = "list indices must be integers.*, not str"
-
-        with pytest.raises(TypeError, match=msg):
-            self.get_exceldf("test1", ext, "Sheet1", index_col=["A"],
-                             usecols=["A", "C"])
-
-    def test_index_col_empty(self, ext):
-        # see gh-9208
-        result = self.get_exceldf("test1", ext, "Sheet3",
-                                  index_col=["A", "B", "C"])
-        expected = DataFrame(columns=["D", "E", "F"],
-                             index=MultiIndex(levels=[[]] * 3,
-                                              codes=[[]] * 3,
-                                              names=["A", "B", "C"]))
-        tm.assert_frame_equal(result, expected)
-
-    @pytest.mark.parametrize("index_col", [None, 2])
-    def test_index_col_with_unnamed(self, ext, index_col):
-        # see gh-18792
-        result = self.get_exceldf("test1", ext, "Sheet4",
-                                  index_col=index_col)
-        expected = DataFrame([["i1", "a", "x"], ["i2", "b", "y"]],
-                             columns=["Unnamed: 0", "col1", "col2"])
-        if index_col:
-            expected = expected.set_index(expected.columns[index_col])
-
-        tm.assert_frame_equal(result, expected)
-
-    def test_usecols_pass_non_existent_column(self, ext):
-        msg = ("Usecols do not match columns, "
-               "columns expected but not found: " + r"\['E'\]")
-
-        with pytest.raises(ValueError, match=msg):
-            self.get_exceldf("test1", ext, usecols=["E"])
-
-    def test_usecols_wrong_type(self, ext):
-        msg = ("'usecols' must either be list-like of "
-               "all strings, all unicode, all integers or a callable.")
-
-        with pytest.raises(ValueError, match=msg):
-            self.get_exceldf("test1", ext, usecols=["E1", 0])
-
-    def test_excel_stop_iterator(self, ext):
-
-        parsed = self.get_exceldf('test2', ext, 'Sheet1')
+        parsed = self.get_exceldf('test2', 'Sheet1')
         expected = DataFrame([['aaaa', 'bbbbb']], columns=['Test', 'Test1'])
         tm.assert_frame_equal(parsed, expected)
 
-    def test_excel_cell_error_na(self, ext):
+    def test_excel_cell_error_na(self):
 
-        parsed = self.get_exceldf('test3', ext, 'Sheet1')
+        parsed = self.get_exceldf('test3', 'Sheet1')
         expected = DataFrame([[np.nan]], columns=['Test'])
         tm.assert_frame_equal(parsed, expected)
 
-    def test_excel_passes_na(self, ext):
+    def test_excel_passes_na(self):
 
-        excel = self.get_excelfile('test4', ext)
+        excel = self.get_excelfile('test4')
 
         parsed = read_excel(excel, 'Sheet1', keep_default_na=False,
                             na_values=['apple'])
@@ -327,7 +257,7 @@ class ReadingTestsBase(SharedItems):
         tm.assert_frame_equal(parsed, expected)
 
         # 13967
-        excel = self.get_excelfile('test5', ext)
+        excel = self.get_excelfile('test5')
 
         parsed = read_excel(excel, 'Sheet1', keep_default_na=False,
                             na_values=['apple'])
@@ -341,21 +271,9 @@ class ReadingTestsBase(SharedItems):
                              columns=['Test'])
         tm.assert_frame_equal(parsed, expected)
 
-    @td.skip_if_no('xlrd', '1.0.1')  # GH-22682
-    def test_deprecated_sheetname(self, ext):
-        # gh-17964
-        excel = self.get_excelfile('test1', ext)
+    def test_excel_table_sheet_by_index(self):
 
-        with tm.assert_produces_warning(FutureWarning, check_stacklevel=False):
-            read_excel(excel, sheetname='Sheet1')
-
-        with pytest.raises(TypeError):
-            read_excel(excel, sheet='Sheet1')
-
-    @td.skip_if_no('xlrd', '1.0.1')  # GH-22682
-    def test_excel_table_sheet_by_index(self, ext):
-
-        excel = self.get_excelfile('test1', ext)
+        excel = self.get_excelfile('test1')
         dfref = self.get_csv_refdf('test1')
 
         df1 = read_excel(excel, 0, index_col=0)
@@ -382,22 +300,21 @@ class ReadingTestsBase(SharedItems):
         with pytest.raises(xlrd.XLRDError):
             read_excel(excel, 'asdf')
 
-    def test_excel_table(self, ext):
+    def test_excel_table(self):
 
         dfref = self.get_csv_refdf('test1')
 
-        df1 = self.get_exceldf('test1', ext, 'Sheet1', index_col=0)
-        df2 = self.get_exceldf('test1', ext, 'Sheet2', skiprows=[1],
-                               index_col=0)
+        df1 = self.get_exceldf('test1', 'Sheet1', index_col=0)
+        df2 = self.get_exceldf('test1', 'Sheet2', skiprows=[1], index_col=0)
         # TODO add index to file
         tm.assert_frame_equal(df1, dfref, check_names=False)
         tm.assert_frame_equal(df2, dfref, check_names=False)
 
-        df3 = self.get_exceldf('test1', ext, 'Sheet1', index_col=0,
+        df3 = self.get_exceldf('test1', 'Sheet1', index_col=0,
                                skipfooter=1)
         tm.assert_frame_equal(df3, df1.iloc[:-1])
 
-    def test_reader_special_dtypes(self, ext):
+    def test_reader_special_dtypes(self):
 
         expected = DataFrame.from_dict(OrderedDict([
             ("IntCol", [1, 2, -3, 4, 0]),
@@ -413,36 +330,36 @@ class ReadingTestsBase(SharedItems):
         basename = 'test_types'
 
         # should read in correctly and infer types
-        actual = self.get_exceldf(basename, ext, 'Sheet1')
+        actual = self.get_exceldf(basename, 'Sheet1')
         tm.assert_frame_equal(actual, expected)
 
         # if not coercing number, then int comes in as float
         float_expected = expected.copy()
         float_expected["IntCol"] = float_expected["IntCol"].astype(float)
         float_expected.loc[float_expected.index[1], "Str2Col"] = 3.0
-        actual = self.get_exceldf(basename, ext, 'Sheet1', convert_float=False)
+        actual = self.get_exceldf(basename, 'Sheet1', convert_float=False)
         tm.assert_frame_equal(actual, float_expected)
 
         # check setting Index (assuming xls and xlsx are the same here)
         for icol, name in enumerate(expected.columns):
-            actual = self.get_exceldf(basename, ext, 'Sheet1', index_col=icol)
+            actual = self.get_exceldf(basename, 'Sheet1', index_col=icol)
             exp = expected.set_index(name)
             tm.assert_frame_equal(actual, exp)
 
         # convert_float and converters should be different but both accepted
         expected["StrCol"] = expected["StrCol"].apply(str)
         actual = self.get_exceldf(
-            basename, ext, 'Sheet1', converters={"StrCol": str})
+            basename, 'Sheet1', converters={"StrCol": str})
         tm.assert_frame_equal(actual, expected)
 
         no_convert_float = float_expected.copy()
         no_convert_float["StrCol"] = no_convert_float["StrCol"].apply(str)
-        actual = self.get_exceldf(basename, ext, 'Sheet1', convert_float=False,
+        actual = self.get_exceldf(basename, 'Sheet1', convert_float=False,
                                   converters={"StrCol": str})
         tm.assert_frame_equal(actual, no_convert_float)
 
     # GH8212 - support for converters and missing values
-    def test_reader_converters(self, ext):
+    def test_reader_converters(self):
 
         basename = 'test_converters'
 
@@ -461,14 +378,13 @@ class ReadingTestsBase(SharedItems):
 
         # should read in correctly and set types of single cells (not array
         # dtypes)
-        actual = self.get_exceldf(basename, ext, 'Sheet1',
-                                  converters=converters)
+        actual = self.get_exceldf(basename, 'Sheet1', converters=converters)
         tm.assert_frame_equal(actual, expected)
 
-    def test_reader_dtype(self, ext):
+    def test_reader_dtype(self):
         # GH 8212
         basename = 'testdtype'
-        actual = self.get_exceldf(basename, ext)
+        actual = self.get_exceldf(basename)
 
         expected = DataFrame({
             'a': [1, 2, 3, 4],
@@ -479,7 +395,7 @@ class ReadingTestsBase(SharedItems):
 
         tm.assert_frame_equal(actual, expected)
 
-        actual = self.get_exceldf(basename, ext,
+        actual = self.get_exceldf(basename,
                                   dtype={'a': 'float64',
                                          'b': 'float32',
                                          'c': str})
@@ -490,41 +406,14 @@ class ReadingTestsBase(SharedItems):
         tm.assert_frame_equal(actual, expected)
 
         with pytest.raises(ValueError):
-            self.get_exceldf(basename, ext, dtype={'d': 'int64'})
+            actual = self.get_exceldf(basename, dtype={'d': 'int64'})
 
-    @pytest.mark.parametrize("dtype,expected", [
-        (None,
-         DataFrame({
-             "a": [1, 2, 3, 4],
-             "b": [2.5, 3.5, 4.5, 5.5],
-             "c": [1, 2, 3, 4],
-             "d": [1.0, 2.0, np.nan, 4.0]
-         })),
-        ({"a": "float64",
-          "b": "float32",
-          "c": str,
-          "d": str
-          },
-         DataFrame({
-             "a": Series([1, 2, 3, 4], dtype="float64"),
-             "b": Series([2.5, 3.5, 4.5, 5.5], dtype="float32"),
-             "c": ["001", "002", "003", "004"],
-             "d": ["1", "2", np.nan, "4"]
-         })),
-    ])
-    def test_reader_dtype_str(self, ext, dtype, expected):
-        # see gh-20377
-        basename = "testdtype"
-
-        actual = self.get_exceldf(basename, ext, dtype=dtype)
-        tm.assert_frame_equal(actual, expected)
-
-    def test_reading_all_sheets(self, ext):
+    def test_reading_all_sheets(self):
         # Test reading all sheetnames by setting sheetname to None,
         # Ensure a dict is returned.
         # See PR #9450
         basename = 'test_multisheet'
-        dfs = self.get_exceldf(basename, ext, sheet_name=None)
+        dfs = self.get_exceldf(basename, sheet_name=None)
         # ensure this is not alphabetical to test order preservation
         expected_keys = ['Charlie', 'Alpha', 'Beta']
         tm.assert_contains_all(expected_keys, dfs.keys())
@@ -532,7 +421,7 @@ class ReadingTestsBase(SharedItems):
         # Ensure sheet order is preserved
         assert expected_keys == list(dfs.keys())
 
-    def test_reading_multiple_specific_sheets(self, ext):
+    def test_reading_multiple_specific_sheets(self):
         # Test reading specific sheetnames by specifying a mixed list
         # of integers and strings, and confirm that duplicated sheet
         # references (positions/names) are removed properly.
@@ -541,82 +430,100 @@ class ReadingTestsBase(SharedItems):
         basename = 'test_multisheet'
         # Explicitly request duplicates. Only the set should be returned.
         expected_keys = [2, 'Charlie', 'Charlie']
-        dfs = self.get_exceldf(basename, ext, sheet_name=expected_keys)
+        dfs = self.get_exceldf(basename, sheet_name=expected_keys)
         expected_keys = list(set(expected_keys))
         tm.assert_contains_all(expected_keys, dfs.keys())
         assert len(expected_keys) == len(dfs.keys())
 
-    def test_reading_all_sheets_with_blank(self, ext):
+    def test_reading_all_sheets_with_blank(self):
         # Test reading all sheetnames by setting sheetname to None,
         # In the case where some sheets are blank.
         # Issue #11711
         basename = 'blank_with_header'
-        dfs = self.get_exceldf(basename, ext, sheet_name=None)
+        dfs = self.get_exceldf(basename, sheet_name=None)
         expected_keys = ['Sheet1', 'Sheet2', 'Sheet3']
         tm.assert_contains_all(expected_keys, dfs.keys())
 
     # GH6403
-    def test_read_excel_blank(self, ext):
-        actual = self.get_exceldf('blank', ext, 'Sheet1')
+    def test_read_excel_blank(self):
+        actual = self.get_exceldf('blank', 'Sheet1')
         tm.assert_frame_equal(actual, DataFrame())
 
-    def test_read_excel_blank_with_header(self, ext):
+    def test_read_excel_blank_with_header(self):
         expected = DataFrame(columns=['col_1', 'col_2'])
-        actual = self.get_exceldf('blank_with_header', ext, 'Sheet1')
+        actual = self.get_exceldf('blank_with_header', 'Sheet1')
         tm.assert_frame_equal(actual, expected)
 
-    @td.skip_if_no("xlwt")
-    @td.skip_if_no("openpyxl")
-    @pytest.mark.parametrize("header,expected", [
-        (None, DataFrame([np.nan] * 4)),
-        (0, DataFrame({"Unnamed: 0": [np.nan] * 3}))
-    ])
-    def test_read_one_empty_col_no_header(self, ext, header, expected):
-        # xref gh-12292
-        filename = "no_header"
+    # GH 12292 : error when read one empty column from excel file
+    def test_read_one_empty_col_no_header(self):
+        _skip_if_no_xlwt()
+        _skip_if_no_openpyxl()
+
         df = pd.DataFrame(
             [["", 1, 100],
              ["", 2, 200],
              ["", 3, 300],
              ["", 4, 400]]
         )
+        with ensure_clean(self.ext) as path:
+            df.to_excel(path, 'no_header', index=False, header=False)
+            actual_header_none = read_excel(
+                path,
+                'no_header',
+                usecols=[0],
+                header=None
+            )
 
-        with ensure_clean(ext) as path:
-            df.to_excel(path, filename, index=False, header=False)
-            result = read_excel(path, filename, usecols=[0], header=header)
+            actual_header_zero = read_excel(
+                path,
+                'no_header',
+                usecols=[0],
+                header=0
+            )
+        expected = DataFrame()
+        tm.assert_frame_equal(actual_header_none, expected)
+        tm.assert_frame_equal(actual_header_zero, expected)
 
-        tm.assert_frame_equal(result, expected)
+    def test_read_one_empty_col_with_header(self):
+        _skip_if_no_xlwt()
+        _skip_if_no_openpyxl()
 
-    @td.skip_if_no("xlwt")
-    @td.skip_if_no("openpyxl")
-    @pytest.mark.parametrize("header,expected", [
-        (None, DataFrame([0] + [np.nan] * 4)),
-        (0, DataFrame([np.nan] * 4))
-    ])
-    def test_read_one_empty_col_with_header(self, ext, header, expected):
-        filename = "with_header"
         df = pd.DataFrame(
             [["", 1, 100],
              ["", 2, 200],
              ["", 3, 300],
              ["", 4, 400]]
         )
-
-        with ensure_clean(ext) as path:
+        with ensure_clean(self.ext) as path:
             df.to_excel(path, 'with_header', index=False, header=True)
-            result = read_excel(path, filename, usecols=[0], header=header)
+            actual_header_none = read_excel(
+                path,
+                'with_header',
+                usecols=[0],
+                header=None
+            )
 
-        tm.assert_frame_equal(result, expected)
+            actual_header_zero = read_excel(
+                path,
+                'with_header',
+                usecols=[0],
+                header=0
+            )
+        expected_header_none = DataFrame(pd.Series([0], dtype='int64'))
+        tm.assert_frame_equal(actual_header_none, expected_header_none)
+        expected_header_zero = DataFrame(columns=[0], dtype='int64')
+        tm.assert_frame_equal(actual_header_zero, expected_header_zero)
 
-    @td.skip_if_no('openpyxl')
-    @td.skip_if_no('xlwt')
-    def test_set_column_names_in_parameter(self, ext):
+    def test_set_column_names_in_parameter(self):
+        _skip_if_no_xlwt()
+        _skip_if_no_openpyxl()
+
         # GH 12870 : pass down column names associated with
         # keyword argument names
         refdf = pd.DataFrame([[1, 'foo'], [2, 'bar'],
                               [3, 'baz']], columns=['a', 'b'])
 
-        with ensure_clean(ext) as pth:
+        with ensure_clean(self.ext) as pth:
             with ExcelWriter(pth) as writer:
                 refdf.to_excel(writer, 'Data_no_head',
                                header=False, index=False)
@@ -633,58 +540,42 @@ class ReadingTestsBase(SharedItems):
             tm.assert_frame_equal(xlsdf_no_head, refdf)
             tm.assert_frame_equal(xlsdf_with_head, refdf)
 
-    def test_date_conversion_overflow(self, ext):
+    def test_date_conversion_overflow(self):
         # GH 10001 : pandas.ExcelFile ignore parse_dates=False
         expected = pd.DataFrame([[pd.Timestamp('2016-03-12'), 'Marc Johnson'],
                                  [pd.Timestamp('2016-03-16'), 'Jack Black'],
                                  [1e+20, 'Timothy Brown']],
                                 columns=['DateColWithBigInt', 'StringCol'])
 
-        result = self.get_exceldf('testdateoverflow', ext)
+        result = self.get_exceldf('testdateoverflow')
         tm.assert_frame_equal(result, expected)
 
-    @td.skip_if_no("xlrd", "1.0.1")  # see gh-22682
-    def test_sheet_name_and_sheetname(self, ext):
-        # gh-10559: Minor improvement: Change "sheet_name" to "sheetname"
-        # gh-10969: DOC: Consistent var names (sheetname vs sheet_name)
-        # gh-12604: CLN GH10559 Rename sheetname variable to sheet_name
-        # gh-20920: ExcelFile.parse() and pd.read_xlsx() have different
-        #           behavior for "sheetname" argument
-        filename = "test1"
-        sheet_name = "Sheet1"
-
-        df_ref = self.get_csv_refdf(filename)
-        df1 = self.get_exceldf(filename, ext,
-                               sheet_name=sheet_name, index_col=0)  # doc
+    def test_sheet_name_and_sheetname(self):
+        # GH10559: Minor improvement: Change "sheet_name" to "sheetname"
+        # GH10969: DOC: Consistent var names (sheetname vs sheet_name)
+        # GH12604: CLN GH10559 Rename sheetname variable to sheet_name
+        dfref = self.get_csv_refdf('test1')
+        df1 = self.get_exceldf('test1', sheet_name='Sheet1')    # doc
         with tm.assert_produces_warning(FutureWarning, check_stacklevel=False):
-            with ignore_xlrd_time_clock_warning():
-                df2 = self.get_exceldf(filename, ext, index_col=0,
-                                       sheetname=sheet_name)  # backward compat
+            df2 = self.get_exceldf('test1', sheetname='Sheet1')  # bkwrd compat
 
-        excel = self.get_excelfile(filename, ext)
-        df1_parse = excel.parse(sheet_name=sheet_name, index_col=0)  # doc
-        with tm.assert_produces_warning(FutureWarning, check_stacklevel=False):
-            df2_parse = excel.parse(index_col=0,
-                                    sheetname=sheet_name)  # backward compat
+        tm.assert_frame_equal(df1, dfref, check_names=False)
+        tm.assert_frame_equal(df2, dfref, check_names=False)
 
-        tm.assert_frame_equal(df1, df_ref, check_names=False)
-        tm.assert_frame_equal(df2, df_ref, check_names=False)
-        tm.assert_frame_equal(df1_parse, df_ref, check_names=False)
-        tm.assert_frame_equal(df2_parse, df_ref, check_names=False)
+    def test_sheet_name_both_raises(self):
+        with tm.assert_raises_regex(TypeError, "Cannot specify both"):
+            self.get_exceldf('test1', sheetname='Sheet1', sheet_name='Sheet1')
 
-    def test_sheet_name_both_raises(self, ext):
-        with pytest.raises(TypeError, match="Cannot specify both"):
-            self.get_exceldf('test1', ext, sheetname='Sheet1',
-                             sheet_name='Sheet1')
 
-        excel = self.get_excelfile('test1', ext)
-        with pytest.raises(TypeError, match="Cannot specify both"):
-            excel.parse(sheetname='Sheet1',
-                        sheet_name='Sheet1')
+class XlrdTests(ReadingTestsBase):
+    """
+    This is the base class for the xlrd tests, and 3 different file formats
+    are supported: xls, xlsx, xlsm
+    """
 
-    def test_excel_read_buffer(self, ext):
+    def test_excel_read_buffer(self):
 
-        pth = os.path.join(self.dirpath, 'test1' + ext)
+        pth = os.path.join(self.dirpath, 'test1' + self.ext)
         expected = read_excel(pth, 'Sheet1', index_col=0)
         with open(pth, 'rb') as f:
             actual = read_excel(f, 'Sheet1', index_col=0)
@@ -695,40 +586,56 @@ class ReadingTestsBase(SharedItems):
             actual = read_excel(xls, 'Sheet1', index_col=0)
             tm.assert_frame_equal(expected, actual)
 
-    def test_bad_engine_raises(self, ext):
-        bad_engine = 'foo'
-        with pytest.raises(ValueError, match="Unknown engine: foo"):
-            read_excel('', engine=bad_engine)
+    def test_read_xlrd_Book(self):
+        _skip_if_no_xlwt()
+
+        import xlrd
+        df = self.frame
+        with ensure_clean('.xls') as pth:
+            df.to_excel(pth, "SheetA")
+            book = xlrd.open_workbook(pth)
+
+            with ExcelFile(book, engine="xlrd") as xl:
+                result = read_excel(xl, "SheetA")
+                tm.assert_frame_equal(df, result)
+
+            result = read_excel(book, sheet_name="SheetA", engine="xlrd")
+            tm.assert_frame_equal(df, result)
 
     @tm.network
-    def test_read_from_http_url(self, ext):
+    def test_read_from_http_url(self):
         url = ('https://raw.github.com/pandas-dev/pandas/master/'
-               'pandas/tests/io/data/test1' + ext)
+               'pandas/tests/io/data/test1' + self.ext)
         url_table = read_excel(url)
-        local_table = self.get_exceldf('test1', ext)
+        local_table = self.get_exceldf('test1')
         tm.assert_frame_equal(url_table, local_table)
 
-    @td.skip_if_not_us_locale
-    def test_read_from_s3_url(self, ext, s3_resource):
-        # Bucket "pandas-test" created in tests/io/conftest.py
-        file_name = os.path.join(self.dirpath, 'test1' + ext)
+    def test_read_from_s3_url(self):
+        boto3 = pytest.importorskip('boto3')
+        pytest.importorskip('s3fs')
+        moto = pytest.importorskip('moto')
 
-        with open(file_name, "rb") as f:
-            s3_resource.Bucket("pandas-test").put_object(Key="test1" + ext,
-                                                         Body=f)
+        with moto.mock_s3():
+            conn = boto3.resource("s3", region_name="us-east-1")
+            conn.create_bucket(Bucket="pandas-test")
+            file_name = os.path.join(self.dirpath, 'test1' + self.ext)
+            with open(file_name, 'rb') as f:
+                conn.Bucket("pandas-test").put_object(Key="test1" + self.ext,
+                                                      Body=f)
 
-        url = ('s3://pandas-test/test1' + ext)
-        url_table = read_excel(url)
-        local_table = self.get_exceldf('test1', ext)
-        tm.assert_frame_equal(url_table, local_table)
+            url = ('s3://pandas-test/test1' + self.ext)
+            url_table = read_excel(url)
+            local_table = self.get_exceldf('test1')
+            tm.assert_frame_equal(url_table, local_table)
 
     @pytest.mark.slow
-    # ignore warning from old xlrd
-    @pytest.mark.filterwarnings("ignore:This metho:PendingDeprecationWarning")
-    def test_read_from_file_url(self, ext):
+    def test_read_from_file_url(self):
 
         # FILE
-        localtable = os.path.join(self.dirpath, 'test1' + ext)
+        if sys.version_info[:2] < (2, 6):
+            pytest.skip("file:// not supported with Python < 2.6")
+
+        localtable = os.path.join(self.dirpath, 'test1' + self.ext)
         local_table = read_excel(localtable)
 
         try:
@@ -742,37 +649,37 @@ class ReadingTestsBase(SharedItems):
         tm.assert_frame_equal(url_table, local_table)
 
     @td.skip_if_no('pathlib')
-    def test_read_from_pathlib_path(self, ext):
+    def test_read_from_pathlib_path(self):
 
         # GH12655
         from pathlib import Path
 
-        str_path = os.path.join(self.dirpath, 'test1' + ext)
+        str_path = os.path.join(self.dirpath, 'test1' + self.ext)
         expected = read_excel(str_path, 'Sheet1', index_col=0)
 
-        path_obj = Path(self.dirpath, 'test1' + ext)
+        path_obj = Path(self.dirpath, 'test1' + self.ext)
         actual = read_excel(path_obj, 'Sheet1', index_col=0)
 
         tm.assert_frame_equal(expected, actual)
 
     @td.skip_if_no('py.path')
-    def test_read_from_py_localpath(self, ext):
+    def test_read_from_py_localpath(self):
 
         # GH12655
         from py.path import local as LocalPath
 
-        str_path = os.path.join(self.dirpath, 'test1' + ext)
+        str_path = os.path.join(self.dirpath, 'test1' + self.ext)
         expected = read_excel(str_path, 'Sheet1', index_col=0)
 
         abs_dir = os.path.abspath(self.dirpath)
-        path_obj = LocalPath(abs_dir).join('test1' + ext)
+        path_obj = LocalPath(abs_dir).join('test1' + self.ext)
         actual = read_excel(path_obj, 'Sheet1', index_col=0)
 
         tm.assert_frame_equal(expected, actual)
 
-    def test_reader_closes_file(self, ext):
+    def test_reader_closes_file(self):
 
-        pth = os.path.join(self.dirpath, 'test1' + ext)
+        pth = os.path.join(self.dirpath, 'test1' + self.ext)
         f = open(pth, 'rb')
         with ExcelFile(f) as xlsx:
             # parses okay
@@ -780,308 +687,318 @@ class ReadingTestsBase(SharedItems):
 
         assert f.closed
 
-    @td.skip_if_no("xlwt")
-    @td.skip_if_no("openpyxl")
-    def test_creating_and_reading_multiple_sheets(self, ext):
-        # see gh-9450
-        #
-        # Test reading multiple sheets, from a runtime
-        # created Excel file with multiple sheets.
-        def tdf(col_sheet_name):
-            d, i = [11, 22, 33], [1, 2, 3]
-            return DataFrame(d, i, columns=[col_sheet_name])
+    def test_creating_and_reading_multiple_sheets(self):
+        # Test reading multiple sheets, from a runtime created excel file
+        # with multiple sheets.
+        # See PR #9450
 
-        sheets = ["AAA", "BBB", "CCC"]
+        _skip_if_no_xlwt()
+        _skip_if_no_openpyxl()
+
+        def tdf(sheetname):
+            d, i = [11, 22, 33], [1, 2, 3]
+            return DataFrame(d, i, columns=[sheetname])
+
+        sheets = ['AAA', 'BBB', 'CCC']
 
         dfs = [tdf(s) for s in sheets]
         dfs = dict(zip(sheets, dfs))
 
-        with ensure_clean(ext) as pth:
+        with ensure_clean(self.ext) as pth:
             with ExcelWriter(pth) as ew:
-                for sheetname, df in dfs.items():
+                for sheetname, df in iteritems(dfs):
                     df.to_excel(ew, sheetname)
-
-            dfs_returned = read_excel(pth, sheet_name=sheets, index_col=0)
-
+            dfs_returned = read_excel(pth, sheet_name=sheets)
             for s in sheets:
                 tm.assert_frame_equal(dfs[s], dfs_returned[s])
 
-    def test_reader_seconds(self, ext):
-
+    def test_reader_seconds(self):
         # Test reading times with and without milliseconds. GH5945.
-        expected = DataFrame.from_dict({"Time": [time(1, 2, 3),
-                                                 time(2, 45, 56, 100000),
-                                                 time(4, 29, 49, 200000),
-                                                 time(6, 13, 42, 300000),
-                                                 time(7, 57, 35, 400000),
-                                                 time(9, 41, 28, 500000),
-                                                 time(11, 25, 21, 600000),
-                                                 time(13, 9, 14, 700000),
-                                                 time(14, 53, 7, 800000),
-                                                 time(16, 37, 0, 900000),
-                                                 time(18, 20, 54)]})
+        import xlrd
 
-        actual = self.get_exceldf('times_1900', ext, 'Sheet1')
+        if LooseVersion(xlrd.__VERSION__) >= LooseVersion("0.9.3"):
+            # Xlrd >= 0.9.3 can handle Excel milliseconds.
+            expected = DataFrame.from_dict({"Time": [time(1, 2, 3),
+                                            time(2, 45, 56, 100000),
+                                            time(4, 29, 49, 200000),
+                                            time(6, 13, 42, 300000),
+                                            time(7, 57, 35, 400000),
+                                            time(9, 41, 28, 500000),
+                                            time(11, 25, 21, 600000),
+                                            time(13, 9, 14, 700000),
+                                            time(14, 53, 7, 800000),
+                                            time(16, 37, 0, 900000),
+                                            time(18, 20, 54)]})
+        else:
+            # Xlrd < 0.9.3 rounds Excel milliseconds.
+            expected = DataFrame.from_dict({"Time": [time(1, 2, 3),
+                                            time(2, 45, 56),
+                                            time(4, 29, 49),
+                                            time(6, 13, 42),
+                                            time(7, 57, 35),
+                                            time(9, 41, 29),
+                                            time(11, 25, 22),
+                                            time(13, 9, 15),
+                                            time(14, 53, 8),
+                                            time(16, 37, 1),
+                                            time(18, 20, 54)]})
+
+        actual = self.get_exceldf('times_1900', 'Sheet1')
         tm.assert_frame_equal(actual, expected)
 
-        actual = self.get_exceldf('times_1904', ext, 'Sheet1')
+        actual = self.get_exceldf('times_1904', 'Sheet1')
         tm.assert_frame_equal(actual, expected)
 
-    def test_read_excel_multiindex(self, ext):
-        # see gh-4679
-        mi = MultiIndex.from_product([["foo", "bar"], ["a", "b"]])
-        mi_file = os.path.join(self.dirpath, "testmultiindex" + ext)
+    def test_read_excel_multiindex(self):
+        # GH 4679
+        mi = MultiIndex.from_product([['foo', 'bar'], ['a', 'b']])
+        mi_file = os.path.join(self.dirpath, 'testmultiindex' + self.ext)
 
-        # "mi_column" sheet
-        expected = DataFrame([[1, 2.5, pd.Timestamp("2015-01-01"), True],
-                              [2, 3.5, pd.Timestamp("2015-01-02"), False],
-                              [3, 4.5, pd.Timestamp("2015-01-03"), False],
-                              [4, 5.5, pd.Timestamp("2015-01-04"), True]],
+        expected = DataFrame([[1, 2.5, pd.Timestamp('2015-01-01'), True],
+                              [2, 3.5, pd.Timestamp('2015-01-02'), False],
+                              [3, 4.5, pd.Timestamp('2015-01-03'), False],
+                              [4, 5.5, pd.Timestamp('2015-01-04'), True]],
                              columns=mi)
 
-        actual = read_excel(mi_file, "mi_column", header=[0, 1], index_col=0)
+        actual = read_excel(mi_file, 'mi_column', header=[0, 1])
+        tm.assert_frame_equal(actual, expected)
+        actual = read_excel(mi_file, 'mi_column', header=[0, 1], index_col=0)
         tm.assert_frame_equal(actual, expected)
 
-        # "mi_index" sheet
+        expected.columns = ['a', 'b', 'c', 'd']
         expected.index = mi
-        expected.columns = ["a", "b", "c", "d"]
-
-        actual = read_excel(mi_file, "mi_index", index_col=[0, 1])
+        actual = read_excel(mi_file, 'mi_index', index_col=[0, 1])
         tm.assert_frame_equal(actual, expected, check_names=False)
 
-        # "both" sheet
         expected.columns = mi
-
-        actual = read_excel(mi_file, "both", index_col=[0, 1], header=[0, 1])
+        actual = read_excel(mi_file, 'both', index_col=[0, 1], header=[0, 1])
         tm.assert_frame_equal(actual, expected, check_names=False)
 
-        # "mi_index_name" sheet
-        expected.columns = ["a", "b", "c", "d"]
-        expected.index = mi.set_names(["ilvl1", "ilvl2"])
-
-        actual = read_excel(mi_file, "mi_index_name", index_col=[0, 1])
+        expected.index = mi.set_names(['ilvl1', 'ilvl2'])
+        expected.columns = ['a', 'b', 'c', 'd']
+        actual = read_excel(mi_file, 'mi_index_name', index_col=[0, 1])
         tm.assert_frame_equal(actual, expected)
 
-        # "mi_column_name" sheet
         expected.index = list(range(4))
-        expected.columns = mi.set_names(["c1", "c2"])
-        actual = read_excel(mi_file, "mi_column_name",
+        expected.columns = mi.set_names(['c1', 'c2'])
+        actual = read_excel(mi_file, 'mi_column_name',
                             header=[0, 1], index_col=0)
         tm.assert_frame_equal(actual, expected)
 
-        # see gh-11317
-        # "name_with_int" sheet
+        # Issue #11317
         expected.columns = mi.set_levels(
-            [1, 2], level=1).set_names(["c1", "c2"])
-
-        actual = read_excel(mi_file, "name_with_int",
+            [1, 2], level=1).set_names(['c1', 'c2'])
+        actual = read_excel(mi_file, 'name_with_int',
                             index_col=0, header=[0, 1])
         tm.assert_frame_equal(actual, expected)
 
-        # "both_name" sheet
-        expected.columns = mi.set_names(["c1", "c2"])
-        expected.index = mi.set_names(["ilvl1", "ilvl2"])
-
-        actual = read_excel(mi_file, "both_name",
+        expected.columns = mi.set_names(['c1', 'c2'])
+        expected.index = mi.set_names(['ilvl1', 'ilvl2'])
+        actual = read_excel(mi_file, 'both_name',
                             index_col=[0, 1], header=[0, 1])
         tm.assert_frame_equal(actual, expected)
 
-        # "both_skiprows" sheet
-        actual = read_excel(mi_file, "both_name_skiprows", index_col=[0, 1],
+        actual = read_excel(mi_file, 'both_name',
+                            index_col=[0, 1], header=[0, 1])
+        tm.assert_frame_equal(actual, expected)
+
+        actual = read_excel(mi_file, 'both_name_skiprows', index_col=[0, 1],
                             header=[0, 1], skiprows=2)
         tm.assert_frame_equal(actual, expected)
 
-    def test_read_excel_multiindex_header_only(self, ext):
-        # see gh-11733.
-        #
-        # Don't try to parse a header name if there isn't one.
-        mi_file = os.path.join(self.dirpath, "testmultiindex" + ext)
-        result = read_excel(mi_file, "index_col_none", header=[0, 1])
-
-        exp_columns = MultiIndex.from_product([("A", "B"), ("key", "val")])
-        expected = DataFrame([[1, 2, 3, 4]] * 2, columns=exp_columns)
-        tm.assert_frame_equal(result, expected)
-
-    @td.skip_if_no("xlsxwriter")
-    def test_read_excel_multiindex_empty_level(self, ext):
-        # see gh-12453
-        with ensure_clean(ext) as path:
+    def test_read_excel_multiindex_empty_level(self):
+        # GH 12453
+        _skip_if_no_xlsxwriter()
+        with ensure_clean('.xlsx') as path:
             df = DataFrame({
-                ("One", "x"): {0: 1},
-                ("Two", "X"): {0: 3},
-                ("Two", "Y"): {0: 7},
-                ("Zero", ""): {0: 0}
+                ('Zero', ''): {0: 0},
+                ('One', 'x'): {0: 1},
+                ('Two', 'X'): {0: 3},
+                ('Two', 'Y'): {0: 7}
             })
 
             expected = DataFrame({
-                ("One", "x"): {0: 1},
-                ("Two", "X"): {0: 3},
-                ("Two", "Y"): {0: 7},
-                ("Zero", "Unnamed: 4_level_1"): {0: 0}
+                ('Zero', 'Unnamed: 3_level_1'): {0: 0},
+                ('One', u'x'): {0: 1},
+                ('Two', u'X'): {0: 3},
+                ('Two', u'Y'): {0: 7}
             })
 
             df.to_excel(path)
-            actual = pd.read_excel(path, header=[0, 1], index_col=0)
+            actual = pd.read_excel(path, header=[0, 1])
             tm.assert_frame_equal(actual, expected)
 
             df = pd.DataFrame({
-                ("Beg", ""): {0: 0},
-                ("Middle", "x"): {0: 1},
-                ("Tail", "X"): {0: 3},
-                ("Tail", "Y"): {0: 7}
+                ('Beg', ''): {0: 0},
+                ('Middle', 'x'): {0: 1},
+                ('Tail', 'X'): {0: 3},
+                ('Tail', 'Y'): {0: 7}
             })
 
             expected = pd.DataFrame({
-                ("Beg", "Unnamed: 1_level_1"): {0: 0},
-                ("Middle", "x"): {0: 1},
-                ("Tail", "X"): {0: 3},
-                ("Tail", "Y"): {0: 7}
+                ('Beg', 'Unnamed: 0_level_1'): {0: 0},
+                ('Middle', u'x'): {0: 1},
+                ('Tail', u'X'): {0: 3},
+                ('Tail', u'Y'): {0: 7}
             })
 
             df.to_excel(path)
-            actual = pd.read_excel(path, header=[0, 1], index_col=0)
+            actual = pd.read_excel(path, header=[0, 1])
             tm.assert_frame_equal(actual, expected)
 
-    @td.skip_if_no("xlsxwriter")
-    @pytest.mark.parametrize("c_idx_names", [True, False])
-    @pytest.mark.parametrize("r_idx_names", [True, False])
-    @pytest.mark.parametrize("c_idx_levels", [1, 3])
-    @pytest.mark.parametrize("r_idx_levels", [1, 3])
-    def test_excel_multindex_roundtrip(self, ext, c_idx_names, r_idx_names,
-                                       c_idx_levels, r_idx_levels):
+    def test_excel_multindex_roundtrip(self):
+        # GH 4679
+        _skip_if_no_xlsxwriter()
+        with ensure_clean('.xlsx') as pth:
+            for c_idx_names in [True, False]:
+                for r_idx_names in [True, False]:
+                    for c_idx_levels in [1, 3]:
+                        for r_idx_levels in [1, 3]:
+                            # column index name can't be serialized unless
+                            # MultiIndex
+                            if (c_idx_levels == 1 and c_idx_names):
+                                continue
+
+                            # empty name case current read in as unnamed
+                            # levels, not Nones
+                            check_names = True
+                            if not r_idx_names and r_idx_levels > 1:
+                                check_names = False
+
+                            df = mkdf(5, 5, c_idx_names,
+                                      r_idx_names, c_idx_levels,
+                                      r_idx_levels)
+                            df.to_excel(pth)
+                            act = pd.read_excel(
+                                pth, index_col=list(range(r_idx_levels)),
+                                header=list(range(c_idx_levels)))
+                            tm.assert_frame_equal(
+                                df, act, check_names=check_names)
+
+                            df.iloc[0, :] = np.nan
+                            df.to_excel(pth)
+                            act = pd.read_excel(
+                                pth, index_col=list(range(r_idx_levels)),
+                                header=list(range(c_idx_levels)))
+                            tm.assert_frame_equal(
+                                df, act, check_names=check_names)
+
+                            df.iloc[-1, :] = np.nan
+                            df.to_excel(pth)
+                            act = pd.read_excel(
+                                pth, index_col=list(range(r_idx_levels)),
+                                header=list(range(c_idx_levels)))
+                            tm.assert_frame_equal(
+                                df, act, check_names=check_names)
+
+    def test_excel_old_index_format(self):
         # see gh-4679
-        with ensure_clean(ext) as pth:
-            if c_idx_levels == 1 and c_idx_names:
-                pytest.skip("Column index name cannot be "
-                            "serialized unless it's a MultiIndex")
-
-            # Empty name case current read in as
-            # unnamed levels, not Nones.
-            check_names = r_idx_names or r_idx_levels <= 1
-
-            df = mkdf(5, 5, c_idx_names, r_idx_names,
-                      c_idx_levels, r_idx_levels)
-            df.to_excel(pth)
-
-            act = pd.read_excel(pth, index_col=list(range(r_idx_levels)),
-                                header=list(range(c_idx_levels)))
-            tm.assert_frame_equal(df, act, check_names=check_names)
-
-            df.iloc[0, :] = np.nan
-            df.to_excel(pth)
-
-            act = pd.read_excel(pth, index_col=list(range(r_idx_levels)),
-                                header=list(range(c_idx_levels)))
-            tm.assert_frame_equal(df, act, check_names=check_names)
-
-            df.iloc[-1, :] = np.nan
-            df.to_excel(pth)
-            act = pd.read_excel(pth, index_col=list(range(r_idx_levels)),
-                                header=list(range(c_idx_levels)))
-            tm.assert_frame_equal(df, act, check_names=check_names)
-
-    def test_excel_old_index_format(self, ext):
-        # see gh-4679
-        filename = "test_index_name_pre17" + ext
+        filename = 'test_index_name_pre17' + self.ext
         in_file = os.path.join(self.dirpath, filename)
 
         # We detect headers to determine if index names exist, so
         # that "index" name in the "names" version of the data will
         # now be interpreted as rows that include null data.
         data = np.array([[None, None, None, None, None],
-                         ["R0C0", "R0C1", "R0C2", "R0C3", "R0C4"],
-                         ["R1C0", "R1C1", "R1C2", "R1C3", "R1C4"],
-                         ["R2C0", "R2C1", "R2C2", "R2C3", "R2C4"],
-                         ["R3C0", "R3C1", "R3C2", "R3C3", "R3C4"],
-                         ["R4C0", "R4C1", "R4C2", "R4C3", "R4C4"]])
-        columns = ["C_l0_g0", "C_l0_g1", "C_l0_g2", "C_l0_g3", "C_l0_g4"]
-        mi = MultiIndex(levels=[["R0", "R_l0_g0", "R_l0_g1",
-                                 "R_l0_g2", "R_l0_g3", "R_l0_g4"],
-                                ["R1", "R_l1_g0", "R_l1_g1",
-                                 "R_l1_g2", "R_l1_g3", "R_l1_g4"]],
-                        codes=[[0, 1, 2, 3, 4, 5], [0, 1, 2, 3, 4, 5]],
+                         ['R0C0', 'R0C1', 'R0C2', 'R0C3', 'R0C4'],
+                         ['R1C0', 'R1C1', 'R1C2', 'R1C3', 'R1C4'],
+                         ['R2C0', 'R2C1', 'R2C2', 'R2C3', 'R2C4'],
+                         ['R3C0', 'R3C1', 'R3C2', 'R3C3', 'R3C4'],
+                         ['R4C0', 'R4C1', 'R4C2', 'R4C3', 'R4C4']])
+        columns = ['C_l0_g0', 'C_l0_g1', 'C_l0_g2', 'C_l0_g3', 'C_l0_g4']
+        mi = MultiIndex(levels=[['R0', 'R_l0_g0', 'R_l0_g1',
+                                 'R_l0_g2', 'R_l0_g3', 'R_l0_g4'],
+                                ['R1', 'R_l1_g0', 'R_l1_g1',
+                                 'R_l1_g2', 'R_l1_g3', 'R_l1_g4']],
+                        labels=[[0, 1, 2, 3, 4, 5], [0, 1, 2, 3, 4, 5]],
                         names=[None, None])
-        si = Index(["R0", "R_l0_g0", "R_l0_g1", "R_l0_g2",
-                    "R_l0_g3", "R_l0_g4"], name=None)
+        si = Index(['R0', 'R_l0_g0', 'R_l0_g1', 'R_l0_g2',
+                    'R_l0_g3', 'R_l0_g4'], name=None)
 
         expected = pd.DataFrame(data, index=si, columns=columns)
 
-        actual = pd.read_excel(in_file, "single_names", index_col=0)
+        actual = pd.read_excel(in_file, 'single_names')
         tm.assert_frame_equal(actual, expected)
 
         expected.index = mi
 
-        actual = pd.read_excel(in_file, "multi_names", index_col=[0, 1])
+        actual = pd.read_excel(in_file, 'multi_names')
         tm.assert_frame_equal(actual, expected)
 
         # The analogous versions of the "names" version data
         # where there are explicitly no names for the indices.
-        data = np.array([["R0C0", "R0C1", "R0C2", "R0C3", "R0C4"],
-                         ["R1C0", "R1C1", "R1C2", "R1C3", "R1C4"],
-                         ["R2C0", "R2C1", "R2C2", "R2C3", "R2C4"],
-                         ["R3C0", "R3C1", "R3C2", "R3C3", "R3C4"],
-                         ["R4C0", "R4C1", "R4C2", "R4C3", "R4C4"]])
-        columns = ["C_l0_g0", "C_l0_g1", "C_l0_g2", "C_l0_g3", "C_l0_g4"]
-        mi = MultiIndex(levels=[["R_l0_g0", "R_l0_g1", "R_l0_g2",
-                                 "R_l0_g3", "R_l0_g4"],
-                                ["R_l1_g0", "R_l1_g1", "R_l1_g2",
-                                 "R_l1_g3", "R_l1_g4"]],
-                        codes=[[0, 1, 2, 3, 4], [0, 1, 2, 3, 4]],
+        data = np.array([['R0C0', 'R0C1', 'R0C2', 'R0C3', 'R0C4'],
+                         ['R1C0', 'R1C1', 'R1C2', 'R1C3', 'R1C4'],
+                         ['R2C0', 'R2C1', 'R2C2', 'R2C3', 'R2C4'],
+                         ['R3C0', 'R3C1', 'R3C2', 'R3C3', 'R3C4'],
+                         ['R4C0', 'R4C1', 'R4C2', 'R4C3', 'R4C4']])
+        columns = ['C_l0_g0', 'C_l0_g1', 'C_l0_g2', 'C_l0_g3', 'C_l0_g4']
+        mi = MultiIndex(levels=[['R_l0_g0', 'R_l0_g1', 'R_l0_g2',
+                                 'R_l0_g3', 'R_l0_g4'],
+                                ['R_l1_g0', 'R_l1_g1', 'R_l1_g2',
+                                 'R_l1_g3', 'R_l1_g4']],
+                        labels=[[0, 1, 2, 3, 4], [0, 1, 2, 3, 4]],
                         names=[None, None])
-        si = Index(["R_l0_g0", "R_l0_g1", "R_l0_g2",
-                    "R_l0_g3", "R_l0_g4"], name=None)
+        si = Index(['R_l0_g0', 'R_l0_g1', 'R_l0_g2',
+                    'R_l0_g3', 'R_l0_g4'], name=None)
 
         expected = pd.DataFrame(data, index=si, columns=columns)
 
-        actual = pd.read_excel(in_file, "single_no_names", index_col=0)
+        actual = pd.read_excel(in_file, 'single_no_names')
         tm.assert_frame_equal(actual, expected)
 
         expected.index = mi
 
-        actual = pd.read_excel(in_file, "multi_no_names", index_col=[0, 1])
+        actual = pd.read_excel(in_file, 'multi_no_names', index_col=[0, 1])
         tm.assert_frame_equal(actual, expected, check_names=False)
 
-    def test_read_excel_bool_header_arg(self, ext):
+    def test_read_excel_bool_header_arg(self):
         # GH 6114
         for arg in [True, False]:
             with pytest.raises(TypeError):
-                pd.read_excel(os.path.join(self.dirpath, 'test1' + ext),
+                pd.read_excel(os.path.join(self.dirpath, 'test1' + self.ext),
                               header=arg)
 
-    def test_read_excel_chunksize(self, ext):
+    def test_read_excel_chunksize(self):
         # GH 8011
         with pytest.raises(NotImplementedError):
-            pd.read_excel(os.path.join(self.dirpath, 'test1' + ext),
+            pd.read_excel(os.path.join(self.dirpath, 'test1' + self.ext),
                           chunksize=100)
 
-    @td.skip_if_no("xlwt")
-    @td.skip_if_no("openpyxl")
-    def test_read_excel_parse_dates(self, ext):
-        # see gh-11544, gh-12051
-        df = DataFrame(
-            {"col": [1, 2, 3],
-             "date_strings": pd.date_range("2012-01-01", periods=3)})
-        df2 = df.copy()
-        df2["date_strings"] = df2["date_strings"].dt.strftime("%m/%d/%Y")
+    def test_read_excel_parse_dates(self):
+        # GH 11544, 12051
+        _skip_if_no_openpyxl()
+        _skip_if_no_xlwt()  # for df2.to_excel
 
-        with ensure_clean(ext) as pth:
+        df = DataFrame(
+            {'col': [1, 2, 3],
+             'date_strings': pd.date_range('2012-01-01', periods=3)})
+        df2 = df.copy()
+        df2['date_strings'] = df2['date_strings'].dt.strftime('%m/%d/%Y')
+
+        with ensure_clean(self.ext) as pth:
             df2.to_excel(pth)
 
-            res = read_excel(pth, index_col=0)
+            res = read_excel(pth)
             tm.assert_frame_equal(df2, res)
 
-            res = read_excel(pth, parse_dates=["date_strings"], index_col=0)
+            # no index_col specified when parse_dates is True
+            with tm.assert_produces_warning():
+                res = read_excel(pth, parse_dates=True)
+                tm.assert_frame_equal(df2, res)
+
+            res = read_excel(pth, parse_dates=['date_strings'], index_col=0)
             tm.assert_frame_equal(df, res)
 
-            date_parser = lambda x: pd.datetime.strptime(x, "%m/%d/%Y")
-            res = read_excel(pth, parse_dates=["date_strings"],
-                             date_parser=date_parser, index_col=0)
+            dateparser = lambda x: pd.datetime.strptime(x, '%m/%d/%Y')
+            res = read_excel(pth, parse_dates=['date_strings'],
+                             date_parser=dateparser, index_col=0)
             tm.assert_frame_equal(df, res)
 
-    def test_read_excel_skiprows_list(self, ext):
+    def test_read_excel_skiprows_list(self):
         # GH 4903
         actual = pd.read_excel(os.path.join(self.dirpath,
-                                            'testskiprows' + ext),
+                                            'testskiprows' + self.ext),
                                'skiprows_list', skiprows=[0, 2])
         expected = DataFrame([[1, 2.5, pd.Timestamp('2015-01-01'), True],
                               [2, 3.5, pd.Timestamp('2015-01-02'), False],
@@ -1091,40 +1008,40 @@ class ReadingTestsBase(SharedItems):
         tm.assert_frame_equal(actual, expected)
 
         actual = pd.read_excel(os.path.join(self.dirpath,
-                                            'testskiprows' + ext),
+                                            'testskiprows' + self.ext),
                                'skiprows_list', skiprows=np.array([0, 2]))
         tm.assert_frame_equal(actual, expected)
 
-    def test_read_excel_nrows(self, ext):
+    def test_read_excel_nrows(self):
         # GH 16645
         num_rows_to_pull = 5
-        actual = pd.read_excel(os.path.join(self.dirpath, 'test1' + ext),
+        actual = pd.read_excel(os.path.join(self.dirpath, 'test1' + self.ext),
                                nrows=num_rows_to_pull)
         expected = pd.read_excel(os.path.join(self.dirpath,
-                                              'test1' + ext))
+                                              'test1' + self.ext))
         expected = expected[:num_rows_to_pull]
         tm.assert_frame_equal(actual, expected)
 
-    def test_read_excel_nrows_greater_than_nrows_in_file(self, ext):
+    def test_read_excel_nrows_greater_than_nrows_in_file(self):
         # GH 16645
         expected = pd.read_excel(os.path.join(self.dirpath,
-                                              'test1' + ext))
+                                              'test1' + self.ext))
         num_records_in_file = len(expected)
         num_rows_to_pull = num_records_in_file + 10
-        actual = pd.read_excel(os.path.join(self.dirpath, 'test1' + ext),
+        actual = pd.read_excel(os.path.join(self.dirpath, 'test1' + self.ext),
                                nrows=num_rows_to_pull)
         tm.assert_frame_equal(actual, expected)
 
-    def test_read_excel_nrows_non_integer_parameter(self, ext):
+    def test_read_excel_nrows_non_integer_parameter(self):
         # GH 16645
         msg = "'nrows' must be an integer >=0"
-        with pytest.raises(ValueError, match=msg):
-            pd.read_excel(os.path.join(self.dirpath, 'test1' + ext),
+        with tm.assert_raises_regex(ValueError, msg):
+            pd.read_excel(os.path.join(self.dirpath, 'test1' + self.ext),
                           nrows='5')
 
-    def test_read_excel_squeeze(self, ext):
+    def test_read_excel_squeeze(self):
         # GH 12157
-        f = os.path.join(self.dirpath, 'test_squeeze' + ext)
+        f = os.path.join(self.dirpath, 'test_squeeze' + self.ext)
 
         actual = pd.read_excel(f, 'two_columns', index_col=0, squeeze=True)
         expected = pd.Series([2, 3, 4], [4, 5, 6], name='b')
@@ -1141,483 +1058,489 @@ class ReadingTestsBase(SharedItems):
         tm.assert_series_equal(actual, expected)
 
 
-@pytest.mark.parametrize("ext", ['.xls', '.xlsx', '.xlsm'])
-class TestXlrdReader(ReadingTestsBase):
-    """
-    This is the base class for the xlrd tests, and 3 different file formats
-    are supported: xls, xlsx, xlsm
-    """
-
-    @td.skip_if_no("xlwt")
-    def test_read_xlrd_book(self, ext):
-        import xlrd
-        df = self.frame
-
-        engine = "xlrd"
-        sheet_name = "SheetA"
-
-        with ensure_clean(ext) as pth:
-            df.to_excel(pth, sheet_name)
-            book = xlrd.open_workbook(pth)
-
-            with ExcelFile(book, engine=engine) as xl:
-                result = read_excel(xl, sheet_name, index_col=0)
-                tm.assert_frame_equal(df, result)
-
-            result = read_excel(book, sheet_name=sheet_name,
-                                engine=engine, index_col=0)
-            tm.assert_frame_equal(df, result)
+class TestXlsReaderTests(XlrdTests):
+    ext = '.xls'
+    engine_name = 'xlrd'
+    check_skip = staticmethod(_skip_if_no_xlrd)
 
 
-class _WriterBase(SharedItems):
-
-    @pytest.fixture(autouse=True)
-    def set_engine_and_path(self, request, merge_cells, engine, ext):
-        """Fixture to set engine and open file for use in each test case
-
-        Rather than requiring `engine=...` to be provided explicitly as an
-        argument in each test, this fixture sets a global option to dictate
-        which engine should be used to write Excel files. After executing
-        the test it rolls back said change to the global option.
-
-        It also uses a context manager to open a temporary excel file for
-        the function to write to, accessible via `self.path`
-
-        Notes
-        -----
-        This fixture will run as part of each test method defined in the
-        class and any subclasses, on account of the `autouse=True`
-        argument
-        """
-        option_name = 'io.excel.{ext}.writer'.format(ext=ext.strip('.'))
-        prev_engine = get_option(option_name)
-        set_option(option_name, engine)
-        with ensure_clean(ext) as path:
-            self.path = path
-            yield
-        set_option(option_name, prev_engine)  # Roll back option change
+class TestXlsxReaderTests(XlrdTests):
+    ext = '.xlsx'
+    engine_name = 'xlrd'
+    check_skip = staticmethod(_skip_if_no_xlrd)
 
 
-@pytest.mark.parametrize("merge_cells", [True, False])
-@pytest.mark.parametrize("engine,ext", [
-    pytest.param('openpyxl', '.xlsx', marks=pytest.mark.skipif(
-        not td.safe_import('openpyxl'), reason='No openpyxl')),
-    pytest.param('openpyxl', '.xlsm', marks=pytest.mark.skipif(
-        not td.safe_import('openpyxl'), reason='No openpyxl')),
-    pytest.param('xlwt', '.xls', marks=pytest.mark.skipif(
-        not td.safe_import('xlwt'), reason='No xlwt')),
-    pytest.param('xlsxwriter', '.xlsx', marks=pytest.mark.skipif(
-        not td.safe_import('xlsxwriter'), reason='No xlsxwriter'))
-])
-class TestExcelWriter(_WriterBase):
+class TestXlsmReaderTests(XlrdTests):
+    ext = '.xlsm'
+    engine_name = 'xlrd'
+    check_skip = staticmethod(_skip_if_no_xlrd)
+
+
+class ExcelWriterBase(SharedItems):
     # Base class for test cases to run with different Excel writers.
+    # To add a writer test, define the following:
+    # 1. A check_skip function that skips your tests if your writer isn't
+    #    installed.
+    # 2. Add a property ext, which is the file extension that your writer
+    #    writes to. (needs to start with '.' so it's a valid path)
+    # 3. Add a property engine_name, which is the name of the writer class.
 
-    def test_excel_sheet_by_name_raise(self, *_):
+    # Test with MultiIndex and Hierarchical Rows as merged cells.
+    merge_cells = True
+
+    def setup_method(self, method):
+        self.check_skip()
+        super(ExcelWriterBase, self).setup_method(method)
+        self.option_name = 'io.excel.%s.writer' % self.ext.strip('.')
+        self.prev_engine = get_option(self.option_name)
+        set_option(self.option_name, self.engine_name)
+
+    def teardown_method(self, method):
+        set_option(self.option_name, self.prev_engine)
+
+    def test_excel_sheet_by_name_raise(self):
+        _skip_if_no_xlrd()
         import xlrd
 
-        gt = DataFrame(np.random.randn(10, 2))
-        gt.to_excel(self.path)
+        with ensure_clean(self.ext) as pth:
+            gt = DataFrame(np.random.randn(10, 2))
+            gt.to_excel(pth)
+            xl = ExcelFile(pth)
+            df = read_excel(xl, 0)
+            tm.assert_frame_equal(gt, df)
 
-        xl = ExcelFile(self.path)
-        df = read_excel(xl, 0, index_col=0)
+            with pytest.raises(xlrd.XLRDError):
+                read_excel(xl, '0')
 
-        tm.assert_frame_equal(gt, df)
+    def test_excelwriter_contextmanager(self):
+        _skip_if_no_xlrd()
 
-        with pytest.raises(xlrd.XLRDError):
-            read_excel(xl, "0")
+        with ensure_clean(self.ext) as pth:
+            with ExcelWriter(pth) as writer:
+                self.frame.to_excel(writer, 'Data1')
+                self.frame2.to_excel(writer, 'Data2')
 
-    def test_excel_writer_context_manager(self, *_):
-        with ExcelWriter(self.path) as writer:
-            self.frame.to_excel(writer, "Data1")
-            self.frame2.to_excel(writer, "Data2")
+            with ExcelFile(pth) as reader:
+                found_df = read_excel(reader, 'Data1')
+                found_df2 = read_excel(reader, 'Data2')
+                tm.assert_frame_equal(found_df, self.frame)
+                tm.assert_frame_equal(found_df2, self.frame2)
 
-        with ExcelFile(self.path) as reader:
-            found_df = read_excel(reader, "Data1", index_col=0)
-            found_df2 = read_excel(reader, "Data2", index_col=0)
+    def test_roundtrip(self):
+        _skip_if_no_xlrd()
 
-            tm.assert_frame_equal(found_df, self.frame)
-            tm.assert_frame_equal(found_df2, self.frame2)
+        with ensure_clean(self.ext) as path:
+            self.frame['A'][:5] = nan
 
-    def test_roundtrip(self, merge_cells, engine, ext):
-        self.frame['A'][:5] = nan
+            self.frame.to_excel(path, 'test1')
+            self.frame.to_excel(path, 'test1', columns=['A', 'B'])
+            self.frame.to_excel(path, 'test1', header=False)
+            self.frame.to_excel(path, 'test1', index=False)
 
-        self.frame.to_excel(self.path, 'test1')
-        self.frame.to_excel(self.path, 'test1', columns=['A', 'B'])
-        self.frame.to_excel(self.path, 'test1', header=False)
-        self.frame.to_excel(self.path, 'test1', index=False)
+            # test roundtrip
+            self.frame.to_excel(path, 'test1')
+            recons = read_excel(path, 'test1', index_col=0)
+            tm.assert_frame_equal(self.frame, recons)
 
-        # test roundtrip
-        self.frame.to_excel(self.path, 'test1')
-        recons = read_excel(self.path, 'test1', index_col=0)
-        tm.assert_frame_equal(self.frame, recons)
+            self.frame.to_excel(path, 'test1', index=False)
+            recons = read_excel(path, 'test1', index_col=None)
+            recons.index = self.frame.index
+            tm.assert_frame_equal(self.frame, recons)
 
-        self.frame.to_excel(self.path, 'test1', index=False)
-        recons = read_excel(self.path, 'test1', index_col=None)
-        recons.index = self.frame.index
-        tm.assert_frame_equal(self.frame, recons)
+            self.frame.to_excel(path, 'test1', na_rep='NA')
+            recons = read_excel(path, 'test1', index_col=0, na_values=['NA'])
+            tm.assert_frame_equal(self.frame, recons)
 
-        self.frame.to_excel(self.path, 'test1', na_rep='NA')
-        recons = read_excel(self.path, 'test1', index_col=0, na_values=['NA'])
-        tm.assert_frame_equal(self.frame, recons)
+            # GH 3611
+            self.frame.to_excel(path, 'test1', na_rep='88')
+            recons = read_excel(path, 'test1', index_col=0, na_values=['88'])
+            tm.assert_frame_equal(self.frame, recons)
 
-        # GH 3611
-        self.frame.to_excel(self.path, 'test1', na_rep='88')
-        recons = read_excel(self.path, 'test1', index_col=0, na_values=['88'])
-        tm.assert_frame_equal(self.frame, recons)
+            self.frame.to_excel(path, 'test1', na_rep='88')
+            recons = read_excel(path, 'test1', index_col=0,
+                                na_values=[88, 88.0])
+            tm.assert_frame_equal(self.frame, recons)
 
-        self.frame.to_excel(self.path, 'test1', na_rep='88')
-        recons = read_excel(self.path, 'test1', index_col=0,
-                            na_values=[88, 88.0])
-        tm.assert_frame_equal(self.frame, recons)
+            # GH 6573
+            self.frame.to_excel(path, 'Sheet1')
+            recons = read_excel(path, index_col=0)
+            tm.assert_frame_equal(self.frame, recons)
 
-        # GH 6573
-        self.frame.to_excel(self.path, 'Sheet1')
-        recons = read_excel(self.path, index_col=0)
-        tm.assert_frame_equal(self.frame, recons)
+            self.frame.to_excel(path, '0')
+            recons = read_excel(path, index_col=0)
+            tm.assert_frame_equal(self.frame, recons)
 
-        self.frame.to_excel(self.path, '0')
-        recons = read_excel(self.path, index_col=0)
-        tm.assert_frame_equal(self.frame, recons)
+            # GH 8825 Pandas Series should provide to_excel method
+            s = self.frame["A"]
+            s.to_excel(path)
+            recons = read_excel(path, index_col=0)
+            tm.assert_frame_equal(s.to_frame(), recons)
 
-        # GH 8825 Pandas Series should provide to_excel method
-        s = self.frame["A"]
-        s.to_excel(self.path)
-        recons = read_excel(self.path, index_col=0)
-        tm.assert_frame_equal(s.to_frame(), recons)
+    def test_mixed(self):
+        _skip_if_no_xlrd()
 
-    def test_mixed(self, merge_cells, engine, ext):
-        self.mixed_frame.to_excel(self.path, 'test1')
-        reader = ExcelFile(self.path)
-        recons = read_excel(reader, 'test1', index_col=0)
-        tm.assert_frame_equal(self.mixed_frame, recons)
+        with ensure_clean(self.ext) as path:
+            self.mixed_frame.to_excel(path, 'test1')
+            reader = ExcelFile(path)
+            recons = read_excel(reader, 'test1', index_col=0)
+            tm.assert_frame_equal(self.mixed_frame, recons)
 
-    def test_ts_frame(self, *_):
+    def test_tsframe(self):
+        _skip_if_no_xlrd()
+
         df = tm.makeTimeDataFrame()[:5]
 
-        df.to_excel(self.path, "test1")
-        reader = ExcelFile(self.path)
+        with ensure_clean(self.ext) as path:
+            df.to_excel(path, 'test1')
+            reader = ExcelFile(path)
+            recons = read_excel(reader, 'test1')
+            tm.assert_frame_equal(df, recons)
 
-        recons = read_excel(reader, "test1", index_col=0)
-        tm.assert_frame_equal(df, recons)
+    def test_basics_with_nan(self):
+        _skip_if_no_xlrd()
+        with ensure_clean(self.ext) as path:
+            self.frame['A'][:5] = nan
+            self.frame.to_excel(path, 'test1')
+            self.frame.to_excel(path, 'test1', columns=['A', 'B'])
+            self.frame.to_excel(path, 'test1', header=False)
+            self.frame.to_excel(path, 'test1', index=False)
 
-    def test_basics_with_nan(self, merge_cells, engine, ext):
-        self.frame['A'][:5] = nan
-        self.frame.to_excel(self.path, 'test1')
-        self.frame.to_excel(self.path, 'test1', columns=['A', 'B'])
-        self.frame.to_excel(self.path, 'test1', header=False)
-        self.frame.to_excel(self.path, 'test1', index=False)
+    def test_int_types(self):
+        _skip_if_no_xlrd()
 
-    @pytest.mark.parametrize("np_type", [
-        np.int8, np.int16, np.int32, np.int64])
-    def test_int_types(self, merge_cells, engine, ext, np_type):
-        # Test np.int values read come back as int
-        # (rather than float which is Excel's format).
-        frame = DataFrame(np.random.randint(-10, 10, size=(10, 2)),
-                          dtype=np_type)
-        frame.to_excel(self.path, "test1")
+        for np_type in (np.int8, np.int16, np.int32, np.int64):
 
-        reader = ExcelFile(self.path)
-        recons = read_excel(reader, "test1", index_col=0)
+            with ensure_clean(self.ext) as path:
+                # Test np.int values read come back as int (rather than float
+                # which is Excel's format).
+                frame = DataFrame(np.random.randint(-10, 10, size=(10, 2)),
+                                  dtype=np_type)
+                frame.to_excel(path, 'test1')
+                reader = ExcelFile(path)
+                recons = read_excel(reader, 'test1')
+                int_frame = frame.astype(np.int64)
+                tm.assert_frame_equal(int_frame, recons)
+                recons2 = read_excel(path, 'test1')
+                tm.assert_frame_equal(int_frame, recons2)
 
-        int_frame = frame.astype(np.int64)
-        tm.assert_frame_equal(int_frame, recons)
+                # test with convert_float=False comes back as float
+                float_frame = frame.astype(float)
+                recons = read_excel(path, 'test1', convert_float=False)
+                tm.assert_frame_equal(recons, float_frame,
+                                      check_index_type=False,
+                                      check_column_type=False)
 
-        recons2 = read_excel(self.path, "test1", index_col=0)
-        tm.assert_frame_equal(int_frame, recons2)
+    def test_float_types(self):
+        _skip_if_no_xlrd()
 
-        # Test with convert_float=False comes back as float.
-        float_frame = frame.astype(float)
-        recons = read_excel(self.path, "test1",
-                            convert_float=False, index_col=0)
-        tm.assert_frame_equal(recons, float_frame,
-                              check_index_type=False,
-                              check_column_type=False)
+        for np_type in (np.float16, np.float32, np.float64):
+            with ensure_clean(self.ext) as path:
+                # Test np.float values read come back as float.
+                frame = DataFrame(np.random.random_sample(10), dtype=np_type)
+                frame.to_excel(path, 'test1')
+                reader = ExcelFile(path)
+                recons = read_excel(reader, 'test1').astype(np_type)
+                tm.assert_frame_equal(frame, recons, check_dtype=False)
 
-    @pytest.mark.parametrize("np_type", [
-        np.float16, np.float32, np.float64])
-    def test_float_types(self, merge_cells, engine, ext, np_type):
-        # Test np.float values read come back as float.
-        frame = DataFrame(np.random.random_sample(10), dtype=np_type)
-        frame.to_excel(self.path, "test1")
+    def test_bool_types(self):
+        _skip_if_no_xlrd()
 
-        reader = ExcelFile(self.path)
-        recons = read_excel(reader, "test1", index_col=0).astype(np_type)
+        for np_type in (np.bool8, np.bool_):
+            with ensure_clean(self.ext) as path:
+                # Test np.bool values read come back as float.
+                frame = (DataFrame([1, 0, True, False], dtype=np_type))
+                frame.to_excel(path, 'test1')
+                reader = ExcelFile(path)
+                recons = read_excel(reader, 'test1').astype(np_type)
+                tm.assert_frame_equal(frame, recons)
 
-        tm.assert_frame_equal(frame, recons, check_dtype=False)
+    def test_inf_roundtrip(self):
+        _skip_if_no_xlrd()
 
-    @pytest.mark.parametrize("np_type", [np.bool8, np.bool_])
-    def test_bool_types(self, merge_cells, engine, ext, np_type):
-        # Test np.bool values read come back as float.
-        frame = (DataFrame([1, 0, True, False], dtype=np_type))
-        frame.to_excel(self.path, "test1")
-
-        reader = ExcelFile(self.path)
-        recons = read_excel(reader, "test1", index_col=0).astype(np_type)
-
-        tm.assert_frame_equal(frame, recons)
-
-    def test_inf_roundtrip(self, *_):
         frame = DataFrame([(1, np.inf), (2, 3), (5, -np.inf)])
-        frame.to_excel(self.path, "test1")
+        with ensure_clean(self.ext) as path:
+            frame.to_excel(path, 'test1')
+            reader = ExcelFile(path)
+            recons = read_excel(reader, 'test1')
+            tm.assert_frame_equal(frame, recons)
 
-        reader = ExcelFile(self.path)
-        recons = read_excel(reader, "test1", index_col=0)
+    def test_sheets(self):
+        _skip_if_no_xlrd()
 
-        tm.assert_frame_equal(frame, recons)
+        with ensure_clean(self.ext) as path:
+            self.frame['A'][:5] = nan
 
-    def test_sheets(self, merge_cells, engine, ext):
-        self.frame['A'][:5] = nan
+            self.frame.to_excel(path, 'test1')
+            self.frame.to_excel(path, 'test1', columns=['A', 'B'])
+            self.frame.to_excel(path, 'test1', header=False)
+            self.frame.to_excel(path, 'test1', index=False)
 
-        self.frame.to_excel(self.path, 'test1')
-        self.frame.to_excel(self.path, 'test1', columns=['A', 'B'])
-        self.frame.to_excel(self.path, 'test1', header=False)
-        self.frame.to_excel(self.path, 'test1', index=False)
+            # Test writing to separate sheets
+            writer = ExcelWriter(path)
+            self.frame.to_excel(writer, 'test1')
+            self.tsframe.to_excel(writer, 'test2')
+            writer.save()
+            reader = ExcelFile(path)
+            recons = read_excel(reader, 'test1', index_col=0)
+            tm.assert_frame_equal(self.frame, recons)
+            recons = read_excel(reader, 'test2', index_col=0)
+            tm.assert_frame_equal(self.tsframe, recons)
+            assert 2 == len(reader.sheet_names)
+            assert 'test1' == reader.sheet_names[0]
+            assert 'test2' == reader.sheet_names[1]
 
-        # Test writing to separate sheets
-        writer = ExcelWriter(self.path)
-        self.frame.to_excel(writer, 'test1')
-        self.tsframe.to_excel(writer, 'test2')
-        writer.save()
-        reader = ExcelFile(self.path)
-        recons = read_excel(reader, 'test1', index_col=0)
-        tm.assert_frame_equal(self.frame, recons)
-        recons = read_excel(reader, 'test2', index_col=0)
-        tm.assert_frame_equal(self.tsframe, recons)
-        assert 2 == len(reader.sheet_names)
-        assert 'test1' == reader.sheet_names[0]
-        assert 'test2' == reader.sheet_names[1]
+    def test_colaliases(self):
+        _skip_if_no_xlrd()
 
-    def test_colaliases(self, merge_cells, engine, ext):
-        self.frame['A'][:5] = nan
+        with ensure_clean(self.ext) as path:
+            self.frame['A'][:5] = nan
 
-        self.frame.to_excel(self.path, 'test1')
-        self.frame.to_excel(self.path, 'test1', columns=['A', 'B'])
-        self.frame.to_excel(self.path, 'test1', header=False)
-        self.frame.to_excel(self.path, 'test1', index=False)
+            self.frame.to_excel(path, 'test1')
+            self.frame.to_excel(path, 'test1', columns=['A', 'B'])
+            self.frame.to_excel(path, 'test1', header=False)
+            self.frame.to_excel(path, 'test1', index=False)
 
-        # column aliases
-        col_aliases = Index(['AA', 'X', 'Y', 'Z'])
-        self.frame2.to_excel(self.path, 'test1', header=col_aliases)
-        reader = ExcelFile(self.path)
-        rs = read_excel(reader, 'test1', index_col=0)
-        xp = self.frame2.copy()
-        xp.columns = col_aliases
-        tm.assert_frame_equal(xp, rs)
+            # column aliases
+            col_aliases = Index(['AA', 'X', 'Y', 'Z'])
+            self.frame2.to_excel(path, 'test1', header=col_aliases)
+            reader = ExcelFile(path)
+            rs = read_excel(reader, 'test1', index_col=0)
+            xp = self.frame2.copy()
+            xp.columns = col_aliases
+            tm.assert_frame_equal(xp, rs)
 
-    def test_roundtrip_indexlabels(self, merge_cells, engine, ext):
-        self.frame['A'][:5] = nan
+    def test_roundtrip_indexlabels(self):
+        _skip_if_no_xlrd()
 
-        self.frame.to_excel(self.path, 'test1')
-        self.frame.to_excel(self.path, 'test1', columns=['A', 'B'])
-        self.frame.to_excel(self.path, 'test1', header=False)
-        self.frame.to_excel(self.path, 'test1', index=False)
+        with ensure_clean(self.ext) as path:
 
-        # test index_label
-        frame = (DataFrame(np.random.randn(10, 2)) >= 0)
-        frame.to_excel(self.path, 'test1',
-                       index_label=['test'],
-                       merge_cells=merge_cells)
-        reader = ExcelFile(self.path)
-        recons = read_excel(reader, 'test1',
-                            index_col=0,
-                            ).astype(np.int64)
-        frame.index.names = ['test']
-        assert frame.index.names == recons.index.names
+            self.frame['A'][:5] = nan
 
-        frame = (DataFrame(np.random.randn(10, 2)) >= 0)
-        frame.to_excel(self.path,
-                       'test1',
-                       index_label=['test', 'dummy', 'dummy2'],
-                       merge_cells=merge_cells)
-        reader = ExcelFile(self.path)
-        recons = read_excel(reader, 'test1',
-                            index_col=0,
-                            ).astype(np.int64)
-        frame.index.names = ['test']
-        assert frame.index.names == recons.index.names
+            self.frame.to_excel(path, 'test1')
+            self.frame.to_excel(path, 'test1', columns=['A', 'B'])
+            self.frame.to_excel(path, 'test1', header=False)
+            self.frame.to_excel(path, 'test1', index=False)
 
-        frame = (DataFrame(np.random.randn(10, 2)) >= 0)
-        frame.to_excel(self.path,
-                       'test1',
-                       index_label='test',
-                       merge_cells=merge_cells)
-        reader = ExcelFile(self.path)
-        recons = read_excel(reader, 'test1',
-                            index_col=0,
-                            ).astype(np.int64)
-        frame.index.names = ['test']
-        tm.assert_frame_equal(frame, recons.astype(bool))
+            # test index_label
+            frame = (DataFrame(np.random.randn(10, 2)) >= 0)
+            frame.to_excel(path, 'test1',
+                           index_label=['test'],
+                           merge_cells=self.merge_cells)
+            reader = ExcelFile(path)
+            recons = read_excel(reader, 'test1',
+                                index_col=0,
+                                ).astype(np.int64)
+            frame.index.names = ['test']
+            assert frame.index.names == recons.index.names
 
-        self.frame.to_excel(self.path,
-                            'test1',
-                            columns=['A', 'B', 'C', 'D'],
-                            index=False, merge_cells=merge_cells)
-        # take 'A' and 'B' as indexes (same row as cols 'C', 'D')
-        df = self.frame.copy()
-        df = df.set_index(['A', 'B'])
+            frame = (DataFrame(np.random.randn(10, 2)) >= 0)
+            frame.to_excel(path,
+                           'test1',
+                           index_label=['test', 'dummy', 'dummy2'],
+                           merge_cells=self.merge_cells)
+            reader = ExcelFile(path)
+            recons = read_excel(reader, 'test1',
+                                index_col=0,
+                                ).astype(np.int64)
+            frame.index.names = ['test']
+            assert frame.index.names == recons.index.names
 
-        reader = ExcelFile(self.path)
-        recons = read_excel(reader, 'test1', index_col=[0, 1])
-        tm.assert_frame_equal(df, recons, check_less_precise=True)
+            frame = (DataFrame(np.random.randn(10, 2)) >= 0)
+            frame.to_excel(path,
+                           'test1',
+                           index_label='test',
+                           merge_cells=self.merge_cells)
+            reader = ExcelFile(path)
+            recons = read_excel(reader, 'test1',
+                                index_col=0,
+                                ).astype(np.int64)
+            frame.index.names = ['test']
+            tm.assert_frame_equal(frame, recons.astype(bool))
 
-    def test_excel_roundtrip_indexname(self, merge_cells, engine, ext):
+        with ensure_clean(self.ext) as path:
+
+            self.frame.to_excel(path,
+                                'test1',
+                                columns=['A', 'B', 'C', 'D'],
+                                index=False, merge_cells=self.merge_cells)
+            # take 'A' and 'B' as indexes (same row as cols 'C', 'D')
+            df = self.frame.copy()
+            df = df.set_index(['A', 'B'])
+
+            reader = ExcelFile(path)
+            recons = read_excel(reader, 'test1', index_col=[0, 1])
+            tm.assert_frame_equal(df, recons, check_less_precise=True)
+
+    def test_excel_roundtrip_indexname(self):
+        _skip_if_no_xlrd()
+
         df = DataFrame(np.random.randn(10, 4))
         df.index.name = 'foo'
 
-        df.to_excel(self.path, merge_cells=merge_cells)
+        with ensure_clean(self.ext) as path:
+            df.to_excel(path, merge_cells=self.merge_cells)
 
-        xf = ExcelFile(self.path)
-        result = read_excel(xf, xf.sheet_names[0],
-                            index_col=0)
+            xf = ExcelFile(path)
+            result = read_excel(xf, xf.sheet_names[0],
+                                index_col=0)
 
-        tm.assert_frame_equal(result, df)
-        assert result.index.name == 'foo'
+            tm.assert_frame_equal(result, df)
+            assert result.index.name == 'foo'
 
-    def test_excel_roundtrip_datetime(self, merge_cells, *_):
+    def test_excel_roundtrip_datetime(self):
+        _skip_if_no_xlrd()
+
         # datetime.date, not sure what to test here exactly
         tsf = self.tsframe.copy()
+        with ensure_clean(self.ext) as path:
 
-        tsf.index = [x.date() for x in self.tsframe.index]
-        tsf.to_excel(self.path, "test1", merge_cells=merge_cells)
+            tsf.index = [x.date() for x in self.tsframe.index]
+            tsf.to_excel(path, 'test1', merge_cells=self.merge_cells)
+            reader = ExcelFile(path)
+            recons = read_excel(reader, 'test1')
+            tm.assert_frame_equal(self.tsframe, recons)
 
-        reader = ExcelFile(self.path)
-        recons = read_excel(reader, "test1", index_col=0)
-
-        tm.assert_frame_equal(self.tsframe, recons)
-
-    def test_excel_date_datetime_format(self, merge_cells, engine, ext):
-        # see gh-4133
-        #
-        # Excel output format strings
+    # GH4133 - excel output format strings
+    def test_excel_date_datetime_format(self):
+        _skip_if_no_xlrd()
         df = DataFrame([[date(2014, 1, 31),
                          date(1999, 9, 24)],
                         [datetime(1998, 5, 26, 23, 33, 4),
                          datetime(2014, 2, 28, 13, 5, 13)]],
-                       index=["DATE", "DATETIME"], columns=["X", "Y"])
+                       index=['DATE', 'DATETIME'], columns=['X', 'Y'])
         df_expected = DataFrame([[datetime(2014, 1, 31),
                                   datetime(1999, 9, 24)],
                                  [datetime(1998, 5, 26, 23, 33, 4),
                                   datetime(2014, 2, 28, 13, 5, 13)]],
-                                index=["DATE", "DATETIME"], columns=["X", "Y"])
+                                index=['DATE', 'DATETIME'], columns=['X', 'Y'])
 
-        with ensure_clean(ext) as filename2:
-            writer1 = ExcelWriter(self.path)
-            writer2 = ExcelWriter(filename2,
-                                  date_format="DD.MM.YYYY",
-                                  datetime_format="DD.MM.YYYY HH-MM-SS")
+        with ensure_clean(self.ext) as filename1:
+            with ensure_clean(self.ext) as filename2:
+                writer1 = ExcelWriter(filename1)
+                writer2 = ExcelWriter(filename2,
+                                      date_format='DD.MM.YYYY',
+                                      datetime_format='DD.MM.YYYY HH-MM-SS')
 
-            df.to_excel(writer1, "test1")
-            df.to_excel(writer2, "test1")
+                df.to_excel(writer1, 'test1')
+                df.to_excel(writer2, 'test1')
 
-            writer1.close()
-            writer2.close()
+                writer1.close()
+                writer2.close()
 
-            reader1 = ExcelFile(self.path)
-            reader2 = ExcelFile(filename2)
+                reader1 = ExcelFile(filename1)
+                reader2 = ExcelFile(filename2)
 
-            rs1 = read_excel(reader1, "test1", index_col=0)
-            rs2 = read_excel(reader2, "test1", index_col=0)
+                rs1 = read_excel(reader1, 'test1', index_col=None)
+                rs2 = read_excel(reader2, 'test1', index_col=None)
 
-            tm.assert_frame_equal(rs1, rs2)
+                tm.assert_frame_equal(rs1, rs2)
 
-            # Since the reader returns a datetime object for dates,
-            # we need to use df_expected to check the result.
-            tm.assert_frame_equal(rs2, df_expected)
+                # since the reader returns a datetime object for dates, we need
+                # to use df_expected to check the result
+                tm.assert_frame_equal(rs2, df_expected)
 
-    def test_to_excel_interval_no_labels(self, *_):
-        # see gh-19242
-        #
-        # Test writing Interval without labels.
-        frame = DataFrame(np.random.randint(-10, 10, size=(20, 1)),
-                          dtype=np.int64)
-        expected = frame.copy()
+    def test_to_excel_interval_no_labels(self):
+        # GH19242 - test writing Interval without labels
+        _skip_if_no_xlrd()
 
-        frame["new"] = pd.cut(frame[0], 10)
-        expected["new"] = pd.cut(expected[0], 10).astype(str)
+        with ensure_clean(self.ext) as path:
+            frame = DataFrame(np.random.randint(-10, 10, size=(20, 1)),
+                              dtype=np.int64)
+            expected = frame.copy()
+            frame['new'] = pd.cut(frame[0], 10)
+            expected['new'] = pd.cut(expected[0], 10).astype(str)
+            frame.to_excel(path, 'test1')
+            reader = ExcelFile(path)
+            recons = read_excel(reader, 'test1')
+            tm.assert_frame_equal(expected, recons)
 
-        frame.to_excel(self.path, "test1")
-        reader = ExcelFile(self.path)
+    def test_to_excel_interval_labels(self):
+        # GH19242 - test writing Interval with labels
+        _skip_if_no_xlrd()
 
-        recons = read_excel(reader, "test1", index_col=0)
-        tm.assert_frame_equal(expected, recons)
+        with ensure_clean(self.ext) as path:
+            frame = DataFrame(np.random.randint(-10, 10, size=(20, 1)),
+                              dtype=np.int64)
+            expected = frame.copy()
+            intervals = pd.cut(frame[0], 10, labels=['A', 'B', 'C', 'D', 'E',
+                                                     'F', 'G', 'H', 'I', 'J'])
+            frame['new'] = intervals
+            expected['new'] = pd.Series(list(intervals))
+            frame.to_excel(path, 'test1')
+            reader = ExcelFile(path)
+            recons = read_excel(reader, 'test1')
+            tm.assert_frame_equal(expected, recons)
 
-    def test_to_excel_interval_labels(self, *_):
-        # see gh-19242
-        #
-        # Test writing Interval with labels.
-        frame = DataFrame(np.random.randint(-10, 10, size=(20, 1)),
-                          dtype=np.int64)
-        expected = frame.copy()
-        intervals = pd.cut(frame[0], 10, labels=["A", "B", "C", "D", "E",
-                                                 "F", "G", "H", "I", "J"])
-        frame["new"] = intervals
-        expected["new"] = pd.Series(list(intervals))
+    def test_to_excel_timedelta(self):
+        # GH 19242, GH9155 - test writing timedelta to xls
+        _skip_if_no_xlrd()
 
-        frame.to_excel(self.path, "test1")
-        reader = ExcelFile(self.path)
+        with ensure_clean('.xls') as path:
+            frame = DataFrame(np.random.randint(-10, 10, size=(20, 1)),
+                              columns=['A'],
+                              dtype=np.int64
+                              )
+            expected = frame.copy()
+            frame['new'] = frame['A'].apply(lambda x: timedelta(seconds=x))
+            expected['new'] = expected['A'].apply(
+                lambda x: timedelta(seconds=x).total_seconds() / float(86400))
+            frame.to_excel(path, 'test1')
+            reader = ExcelFile(path)
+            recons = read_excel(reader, 'test1')
+            tm.assert_frame_equal(expected, recons)
 
-        recons = read_excel(reader, "test1", index_col=0)
-        tm.assert_frame_equal(expected, recons)
+    def test_to_excel_periodindex(self):
+        _skip_if_no_xlrd()
 
-    def test_to_excel_timedelta(self, *_):
-        # see gh-19242, gh-9155
-        #
-        # Test writing timedelta to xls.
-        frame = DataFrame(np.random.randint(-10, 10, size=(20, 1)),
-                          columns=["A"], dtype=np.int64)
-        expected = frame.copy()
-
-        frame["new"] = frame["A"].apply(lambda x: timedelta(seconds=x))
-        expected["new"] = expected["A"].apply(
-            lambda x: timedelta(seconds=x).total_seconds() / float(86400))
-
-        frame.to_excel(self.path, "test1")
-        reader = ExcelFile(self.path)
-
-        recons = read_excel(reader, "test1", index_col=0)
-        tm.assert_frame_equal(expected, recons)
-
-    def test_to_excel_periodindex(self, merge_cells, engine, ext):
         frame = self.tsframe
         xp = frame.resample('M', kind='period').mean()
 
-        xp.to_excel(self.path, 'sht1')
+        with ensure_clean(self.ext) as path:
+            xp.to_excel(path, 'sht1')
 
-        reader = ExcelFile(self.path)
-        rs = read_excel(reader, 'sht1', index_col=0)
-        tm.assert_frame_equal(xp, rs.to_period('M'))
+            reader = ExcelFile(path)
+            rs = read_excel(reader, 'sht1', index_col=0)
+            tm.assert_frame_equal(xp, rs.to_period('M'))
 
-    def test_to_excel_multiindex(self, merge_cells, engine, ext):
+    def test_to_excel_multiindex(self):
+        _skip_if_no_xlrd()
+
         frame = self.frame
         arrays = np.arange(len(frame.index) * 2).reshape(2, -1)
         new_index = MultiIndex.from_arrays(arrays,
                                            names=['first', 'second'])
         frame.index = new_index
 
-        frame.to_excel(self.path, 'test1', header=False)
-        frame.to_excel(self.path, 'test1', columns=['A', 'B'])
+        with ensure_clean(self.ext) as path:
+            frame.to_excel(path, 'test1', header=False)
+            frame.to_excel(path, 'test1', columns=['A', 'B'])
 
-        # round trip
-        frame.to_excel(self.path, 'test1', merge_cells=merge_cells)
-        reader = ExcelFile(self.path)
-        df = read_excel(reader, 'test1', index_col=[0, 1])
-        tm.assert_frame_equal(frame, df)
+            # round trip
+            frame.to_excel(path, 'test1', merge_cells=self.merge_cells)
+            reader = ExcelFile(path)
+            df = read_excel(reader, 'test1', index_col=[0, 1])
+            tm.assert_frame_equal(frame, df)
 
     # GH13511
-    def test_to_excel_multiindex_nan_label(self, merge_cells, engine, ext):
+    def test_to_excel_multiindex_nan_label(self):
+        _skip_if_no_xlrd()
+
         frame = pd.DataFrame({'A': [None, 2, 3],
                               'B': [10, 20, 30],
                               'C': np.random.sample(3)})
         frame = frame.set_index(['A', 'B'])
 
-        frame.to_excel(self.path, merge_cells=merge_cells)
-        df = read_excel(self.path, index_col=[0, 1])
-        tm.assert_frame_equal(frame, df)
+        with ensure_clean(self.ext) as path:
+            frame.to_excel(path, merge_cells=self.merge_cells)
+            df = read_excel(path, index_col=[0, 1])
+            tm.assert_frame_equal(frame, df)
 
     # Test for Issue 11328. If column indices are integers, make
     # sure they are handled correctly for either setting of
     # merge_cells
-    def test_to_excel_multiindex_cols(self, merge_cells, engine, ext):
+    def test_to_excel_multiindex_cols(self):
+        _skip_if_no_xlrd()
+
         frame = self.frame
         arrays = np.arange(len(frame.index) * 2).reshape(2, -1)
         new_index = MultiIndex.from_arrays(arrays,
@@ -1628,37 +1551,42 @@ class TestExcelWriter(_WriterBase):
                                                  (50, 1), (50, 2)])
         frame.columns = new_cols_index
         header = [0, 1]
-        if not merge_cells:
+        if not self.merge_cells:
             header = 0
 
-        # round trip
-        frame.to_excel(self.path, 'test1', merge_cells=merge_cells)
-        reader = ExcelFile(self.path)
-        df = read_excel(reader, 'test1', header=header,
-                        index_col=[0, 1])
-        if not merge_cells:
-            fm = frame.columns.format(sparsify=False,
-                                      adjoin=False, names=False)
-            frame.columns = [".".join(map(str, q)) for q in zip(*fm)]
-        tm.assert_frame_equal(frame, df)
+        with ensure_clean(self.ext) as path:
+            # round trip
+            frame.to_excel(path, 'test1', merge_cells=self.merge_cells)
+            reader = ExcelFile(path)
+            df = read_excel(reader, 'test1', header=header,
+                            index_col=[0, 1])
+            if not self.merge_cells:
+                fm = frame.columns.format(sparsify=False,
+                                          adjoin=False, names=False)
+                frame.columns = [".".join(map(str, q)) for q in zip(*fm)]
+            tm.assert_frame_equal(frame, df)
 
-    def test_to_excel_multiindex_dates(self, merge_cells, engine, ext):
+    def test_to_excel_multiindex_dates(self):
+        _skip_if_no_xlrd()
+
         # try multiindex with dates
         tsframe = self.tsframe.copy()
         new_index = [tsframe.index, np.arange(len(tsframe.index))]
         tsframe.index = MultiIndex.from_arrays(new_index)
 
-        tsframe.index.names = ['time', 'foo']
-        tsframe.to_excel(self.path, 'test1', merge_cells=merge_cells)
-        reader = ExcelFile(self.path)
-        recons = read_excel(reader, 'test1',
-                            index_col=[0, 1])
+        with ensure_clean(self.ext) as path:
+            tsframe.index.names = ['time', 'foo']
+            tsframe.to_excel(path, 'test1', merge_cells=self.merge_cells)
+            reader = ExcelFile(path)
+            recons = read_excel(reader, 'test1',
+                                index_col=[0, 1])
 
-        tm.assert_frame_equal(tsframe, recons)
-        assert recons.index.names == ('time', 'foo')
+            tm.assert_frame_equal(tsframe, recons)
+            assert recons.index.names == ('time', 'foo')
 
-    def test_to_excel_multiindex_no_write_index(self, merge_cells, engine,
-                                                ext):
+    def test_to_excel_multiindex_no_write_index(self):
+        _skip_if_no_xlrd()
+
         # Test writing and re-reading a MI witout the index. GH 5616.
 
         # Initial non-MI frame.
@@ -1669,66 +1597,74 @@ class TestExcelWriter(_WriterBase):
         multi_index = MultiIndex.from_tuples([(70, 80), (90, 100)])
         frame2.index = multi_index
 
-        # Write out to Excel without the index.
-        frame2.to_excel(self.path, 'test1', index=False)
+        with ensure_clean(self.ext) as path:
 
-        # Read it back in.
-        reader = ExcelFile(self.path)
-        frame3 = read_excel(reader, 'test1')
+            # Write out to Excel without the index.
+            frame2.to_excel(path, 'test1', index=False)
 
-        # Test that it is the same as the initial frame.
-        tm.assert_frame_equal(frame1, frame3)
+            # Read it back in.
+            reader = ExcelFile(path)
+            frame3 = read_excel(reader, 'test1')
 
-    def test_to_excel_float_format(self, *_):
+            # Test that it is the same as the initial frame.
+            tm.assert_frame_equal(frame1, frame3)
+
+    def test_to_excel_float_format(self):
+        _skip_if_no_xlrd()
+
         df = DataFrame([[0.123456, 0.234567, 0.567567],
                         [12.32112, 123123.2, 321321.2]],
-                       index=["A", "B"], columns=["X", "Y", "Z"])
-        df.to_excel(self.path, "test1", float_format="%.2f")
+                       index=['A', 'B'], columns=['X', 'Y', 'Z'])
 
-        reader = ExcelFile(self.path)
-        result = read_excel(reader, "test1", index_col=0)
+        with ensure_clean(self.ext) as filename:
+            df.to_excel(filename, 'test1', float_format='%.2f')
 
-        expected = DataFrame([[0.12, 0.23, 0.57],
-                              [12.32, 123123.20, 321321.20]],
-                             index=["A", "B"], columns=["X", "Y", "Z"])
-        tm.assert_frame_equal(result, expected)
+            reader = ExcelFile(filename)
+            rs = read_excel(reader, 'test1', index_col=None)
+            xp = DataFrame([[0.12, 0.23, 0.57],
+                            [12.32, 123123.20, 321321.20]],
+                           index=['A', 'B'], columns=['X', 'Y', 'Z'])
+            tm.assert_frame_equal(rs, xp)
 
-    def test_to_excel_output_encoding(self, merge_cells, engine, ext):
-        # Avoid mixed inferred_type.
-        df = DataFrame([["\u0192", "\u0193", "\u0194"],
-                        ["\u0195", "\u0196", "\u0197"]],
-                       index=["A\u0192", "B"],
-                       columns=["X\u0193", "Y", "Z"])
+    def test_to_excel_output_encoding(self):
+        _skip_if_no_xlrd()
 
-        with ensure_clean("__tmp_to_excel_float_format__." + ext) as filename:
-            df.to_excel(filename, sheet_name="TestSheet", encoding="utf8")
-            result = read_excel(filename, "TestSheet",
-                                encoding="utf8", index_col=0)
+        # avoid mixed inferred_type
+        df = DataFrame([[u'\u0192', u'\u0193', u'\u0194'],
+                        [u'\u0195', u'\u0196', u'\u0197']],
+                       index=[u'A\u0192', u'B'],
+                       columns=[u'X\u0193', u'Y', u'Z'])
+
+        with ensure_clean('__tmp_to_excel_float_format__.' + self.ext)\
+                as filename:
+            df.to_excel(filename, sheet_name='TestSheet', encoding='utf8')
+            result = read_excel(filename, 'TestSheet', encoding='utf8')
             tm.assert_frame_equal(result, df)
 
-    def test_to_excel_unicode_filename(self, merge_cells, engine, ext):
-        with ensure_clean("\u0192u." + ext) as filename:
+    def test_to_excel_unicode_filename(self):
+        _skip_if_no_xlrd()
+        with ensure_clean(u('\u0192u.') + self.ext) as filename:
             try:
-                f = open(filename, "wb")
+                f = open(filename, 'wb')
             except UnicodeEncodeError:
-                pytest.skip("No unicode file names on this system")
+                pytest.skip('no unicode file names on this system')
             else:
                 f.close()
 
             df = DataFrame([[0.123456, 0.234567, 0.567567],
                             [12.32112, 123123.2, 321321.2]],
-                           index=["A", "B"], columns=["X", "Y", "Z"])
-            df.to_excel(filename, "test1", float_format="%.2f")
+                           index=['A', 'B'], columns=['X', 'Y', 'Z'])
+
+            df.to_excel(filename, 'test1', float_format='%.2f')
 
             reader = ExcelFile(filename)
-            result = read_excel(reader, "test1", index_col=0)
+            rs = read_excel(reader, 'test1', index_col=None)
+            xp = DataFrame([[0.12, 0.23, 0.57],
+                            [12.32, 123123.20, 321321.20]],
+                           index=['A', 'B'], columns=['X', 'Y', 'Z'])
+            tm.assert_frame_equal(rs, xp)
 
-            expected = DataFrame([[0.12, 0.23, 0.57],
-                                  [12.32, 123123.20, 321321.20]],
-                                 index=["A", "B"], columns=["X", "Y", "Z"])
-            tm.assert_frame_equal(result, expected)
-
-    # def test_to_excel_header_styling_xls(self, merge_cells, engine, ext):
+    # def test_to_excel_header_styling_xls(self):
 
     #     import StringIO
     #     s = StringIO(
@@ -1775,7 +1711,7 @@ class TestExcelWriter(_WriterBase):
     #             assert 1 == cell_xf.border.left_line_style
     #             assert 2 == cell_xf.alignment.hor_align
     #     os.remove(filename)
-    # def test_to_excel_header_styling_xlsx(self, merge_cells, engine, ext):
+    # def test_to_excel_header_styling_xlsx(self):
     #     import StringIO
     #     s = StringIO(
     #     """Date,ticker,type,value
@@ -1828,186 +1764,216 @@ class TestExcelWriter(_WriterBase):
     #         assert ws.cell(maddr).merged
     #     os.remove(filename)
 
-    @pytest.mark.parametrize("use_headers", [True, False])
-    @pytest.mark.parametrize("r_idx_nlevels", [1, 2, 3])
-    @pytest.mark.parametrize("c_idx_nlevels", [1, 2, 3])
-    def test_excel_010_hemstring(self, merge_cells, engine, ext,
-                                 c_idx_nlevels, r_idx_nlevels, use_headers):
+    def test_excel_010_hemstring(self):
+        _skip_if_no_xlrd()
 
-        def roundtrip(data, header=True, parser_hdr=0, index=True):
-            data.to_excel(self.path, header=header,
-                          merge_cells=merge_cells, index=index)
-
-            xf = ExcelFile(self.path)
-            return read_excel(xf, xf.sheet_names[0], header=parser_hdr)
-
-        # Basic test.
-        parser_header = 0 if use_headers else None
-        res = roundtrip(DataFrame([0]), use_headers, parser_header)
-
-        assert res.shape == (1, 2)
-        assert res.iloc[0, 0] is not np.nan
-
-        # More complex tests with multi-index.
-        nrows = 5
-        ncols = 3
+        if self.merge_cells:
+            pytest.skip('Skip tests for merged MI format.')
 
         from pandas.util.testing import makeCustomDataframe as mkdf
         # ensure limited functionality in 0.10
-        # override of gh-2370 until sorted out in 0.11
+        # override of #2370 until sorted out in 0.11
 
-        df = mkdf(nrows, ncols, r_idx_nlevels=r_idx_nlevels,
-                  c_idx_nlevels=c_idx_nlevels)
+        def roundtrip(df, header=True, parser_hdr=0, index=True):
 
-        # This if will be removed once multi-column Excel writing
-        # is implemented. For now fixing gh-9794.
-        if c_idx_nlevels > 1:
-            with pytest.raises(NotImplementedError):
-                roundtrip(df, use_headers, index=False)
-        else:
-            res = roundtrip(df, use_headers)
+            with ensure_clean(self.ext) as path:
+                df.to_excel(path, header=header,
+                            merge_cells=self.merge_cells, index=index)
+                xf = ExcelFile(path)
+                res = read_excel(xf, xf.sheet_names[0], header=parser_hdr)
+                return res
 
-            if use_headers:
-                assert res.shape == (nrows, ncols + r_idx_nlevels)
-            else:
-                # First row taken as columns.
-                assert res.shape == (nrows - 1, ncols + r_idx_nlevels)
+        nrows = 5
+        ncols = 3
+        for use_headers in (True, False):
+            for i in range(1, 4):  # row multindex upto nlevel=3
+                for j in range(1, 4):  # col ""
+                    df = mkdf(nrows, ncols, r_idx_nlevels=i, c_idx_nlevels=j)
 
-            # No NaNs.
-            for r in range(len(res.index)):
-                for c in range(len(res.columns)):
-                    assert res.iloc[r, c] is not np.nan
+                    # this if will be removed once multi column excel writing
+                    # is implemented for now fixing #9794
+                    if j > 1:
+                        with pytest.raises(NotImplementedError):
+                            res = roundtrip(df, use_headers, index=False)
+                    else:
+                        res = roundtrip(df, use_headers)
 
-    def test_duplicated_columns(self, *_):
-        # see gh-5235
-        df = DataFrame([[1, 2, 3], [1, 2, 3], [1, 2, 3]],
-                       columns=["A", "B", "B"])
-        df.to_excel(self.path, "test1")
-        expected = DataFrame([[1, 2, 3], [1, 2, 3], [1, 2, 3]],
-                             columns=["A", "B", "B.1"])
+                    if use_headers:
+                        assert res.shape == (nrows, ncols + i)
+                    else:
+                        # first row taken as columns
+                        assert res.shape == (nrows - 1, ncols + i)
 
-        # By default, we mangle.
-        result = read_excel(self.path, "test1", index_col=0)
-        tm.assert_frame_equal(result, expected)
+                    # no nans
+                    for r in range(len(res.index)):
+                        for c in range(len(res.columns)):
+                            assert res.iloc[r, c] is not np.nan
 
-        # Explicitly, we pass in the parameter.
-        result = read_excel(self.path, "test1", index_col=0,
-                            mangle_dupe_cols=True)
-        tm.assert_frame_equal(result, expected)
+        res = roundtrip(DataFrame([0]))
+        assert res.shape == (1, 1)
+        assert res.iloc[0, 0] is not np.nan
 
-        # see gh-11007, gh-10970
-        df = DataFrame([[1, 2, 3, 4], [5, 6, 7, 8]],
-                       columns=["A", "B", "A", "B"])
-        df.to_excel(self.path, "test1")
+        res = roundtrip(DataFrame([0]), False, None)
+        assert res.shape == (1, 2)
+        assert res.iloc[0, 0] is not np.nan
 
-        result = read_excel(self.path, "test1", index_col=0)
-        expected = DataFrame([[1, 2, 3, 4], [5, 6, 7, 8]],
-                             columns=["A", "B", "A.1", "B.1"])
-        tm.assert_frame_equal(result, expected)
+    def test_excel_010_hemstring_raises_NotImplementedError(self):
+        # This test was failing only for j>1 and header=False,
+        # So I reproduced a simple test.
+        _skip_if_no_xlrd()
 
-        # see gh-10982
-        df.to_excel(self.path, "test1", index=False, header=False)
-        result = read_excel(self.path, "test1", header=None)
+        if self.merge_cells:
+            pytest.skip('Skip tests for merged MI format.')
 
-        expected = DataFrame([[1, 2, 3, 4], [5, 6, 7, 8]])
-        tm.assert_frame_equal(result, expected)
+        from pandas.util.testing import makeCustomDataframe as mkdf
+        # ensure limited functionality in 0.10
+        # override of #2370 until sorted out in 0.11
 
-        msg = "Setting mangle_dupe_cols=False is not supported yet"
-        with pytest.raises(ValueError, match=msg):
-            read_excel(self.path, "test1", header=None, mangle_dupe_cols=False)
+        def roundtrip2(df, header=True, parser_hdr=0, index=True):
 
-    def test_swapped_columns(self, merge_cells, engine, ext):
+            with ensure_clean(self.ext) as path:
+                df.to_excel(path, header=header,
+                            merge_cells=self.merge_cells, index=index)
+                xf = ExcelFile(path)
+                res = read_excel(xf, xf.sheet_names[0], header=parser_hdr)
+                return res
+
+        nrows = 5
+        ncols = 3
+        j = 2
+        i = 1
+        df = mkdf(nrows, ncols, r_idx_nlevels=i, c_idx_nlevels=j)
+        with pytest.raises(NotImplementedError):
+            roundtrip2(df, header=False, index=False)
+
+    def test_duplicated_columns(self):
+        # Test for issue #5235
+        _skip_if_no_xlrd()
+
+        with ensure_clean(self.ext) as path:
+            write_frame = DataFrame([[1, 2, 3], [1, 2, 3], [1, 2, 3]])
+            colnames = ['A', 'B', 'B']
+
+            write_frame.columns = colnames
+            write_frame.to_excel(path, 'test1')
+
+            read_frame = read_excel(path, 'test1')
+            read_frame.columns = colnames
+            tm.assert_frame_equal(write_frame, read_frame)
+
+            # 11007 / #10970
+            write_frame = DataFrame([[1, 2, 3, 4], [5, 6, 7, 8]],
+                                    columns=['A', 'B', 'A', 'B'])
+            write_frame.to_excel(path, 'test1')
+            read_frame = read_excel(path, 'test1')
+            read_frame.columns = ['A', 'B', 'A', 'B']
+            tm.assert_frame_equal(write_frame, read_frame)
+
+            # 10982
+            write_frame.to_excel(path, 'test1', index=False, header=False)
+            read_frame = read_excel(path, 'test1', header=None)
+            write_frame.columns = [0, 1, 2, 3]
+            tm.assert_frame_equal(write_frame, read_frame)
+
+    def test_swapped_columns(self):
         # Test for issue #5427.
-        write_frame = DataFrame({'A': [1, 1, 1],
-                                 'B': [2, 2, 2]})
-        write_frame.to_excel(self.path, 'test1', columns=['B', 'A'])
+        _skip_if_no_xlrd()
 
-        read_frame = read_excel(self.path, 'test1', header=0)
+        with ensure_clean(self.ext) as path:
+            write_frame = DataFrame({'A': [1, 1, 1],
+                                     'B': [2, 2, 2]})
+            write_frame.to_excel(path, 'test1', columns=['B', 'A'])
 
-        tm.assert_series_equal(write_frame['A'], read_frame['A'])
-        tm.assert_series_equal(write_frame['B'], read_frame['B'])
+            read_frame = read_excel(path, 'test1', header=0)
 
-    def test_invalid_columns(self, *_):
-        # see gh-10982
-        write_frame = DataFrame({"A": [1, 1, 1],
-                                 "B": [2, 2, 2]})
+            tm.assert_series_equal(write_frame['A'], read_frame['A'])
+            tm.assert_series_equal(write_frame['B'], read_frame['B'])
 
-        with tm.assert_produces_warning(FutureWarning,
-                                        check_stacklevel=False):
-            write_frame.to_excel(self.path, "test1", columns=["B", "C"])
+    def test_invalid_columns(self):
+        # 10982
+        _skip_if_no_xlrd()
 
-        expected = write_frame.reindex(columns=["B", "C"])
-        read_frame = read_excel(self.path, "test1", index_col=0)
-        tm.assert_frame_equal(expected, read_frame)
+        with ensure_clean(self.ext) as path:
+            write_frame = DataFrame({'A': [1, 1, 1],
+                                     'B': [2, 2, 2]})
 
-        with pytest.raises(KeyError):
-            write_frame.to_excel(self.path, "test1", columns=["C", "D"])
+            with tm.assert_produces_warning(FutureWarning,
+                                            check_stacklevel=False):
+                write_frame.to_excel(path, 'test1', columns=['B', 'C'])
+            expected = write_frame.reindex(columns=['B', 'C'])
+            read_frame = read_excel(path, 'test1')
+            tm.assert_frame_equal(expected, read_frame)
 
-    def test_comment_arg(self, *_):
-        # see gh-18735
-        #
-        # Test the comment argument functionality to read_excel.
+            with pytest.raises(KeyError):
+                write_frame.to_excel(path, 'test1', columns=['C', 'D'])
 
-        # Create file to read in.
-        df = DataFrame({"A": ["one", "#one", "one"],
-                        "B": ["two", "two", "#two"]})
-        df.to_excel(self.path, "test_c")
+    def test_comment_arg(self):
+        # Re issue #18735
+        # Test the comment argument functionality to read_excel
+        with ensure_clean(self.ext) as path:
 
-        # Read file without comment arg.
-        result1 = read_excel(self.path, "test_c", index_col=0)
+            # Create file to read in
+            df = DataFrame({'A': ['one', '#one', 'one'],
+                            'B': ['two', 'two', '#two']})
+            df.to_excel(path, 'test_c')
 
-        result1.iloc[1, 0] = None
-        result1.iloc[1, 1] = None
-        result1.iloc[2, 1] = None
+            # Read file without comment arg
+            result1 = read_excel(path, 'test_c')
+            result1.iloc[1, 0] = None
+            result1.iloc[1, 1] = None
+            result1.iloc[2, 1] = None
+            result2 = read_excel(path, 'test_c', comment='#')
+            tm.assert_frame_equal(result1, result2)
 
-        result2 = read_excel(self.path, "test_c", comment="#", index_col=0)
-        tm.assert_frame_equal(result1, result2)
-
-    def test_comment_default(self, merge_cells, engine, ext):
+    def test_comment_default(self):
         # Re issue #18735
         # Test the comment argument default to read_excel
+        with ensure_clean(self.ext) as path:
 
-        # Create file to read in
-        df = DataFrame({'A': ['one', '#one', 'one'],
-                        'B': ['two', 'two', '#two']})
-        df.to_excel(self.path, 'test_c')
+            # Create file to read in
+            df = DataFrame({'A': ['one', '#one', 'one'],
+                            'B': ['two', 'two', '#two']})
+            df.to_excel(path, 'test_c')
 
-        # Read file with default and explicit comment=None
-        result1 = read_excel(self.path, 'test_c')
-        result2 = read_excel(self.path, 'test_c', comment=None)
-        tm.assert_frame_equal(result1, result2)
+            # Read file with default and explicit comment=None
+            result1 = read_excel(path, 'test_c')
+            result2 = read_excel(path, 'test_c', comment=None)
+            tm.assert_frame_equal(result1, result2)
 
-    def test_comment_used(self, *_):
-        # see gh-18735
-        #
-        # Test the comment argument is working as expected when used.
+    def test_comment_used(self):
+        # Re issue #18735
+        # Test the comment argument is working as expected when used
+        with ensure_clean(self.ext) as path:
 
-        # Create file to read in.
-        df = DataFrame({"A": ["one", "#one", "one"],
-                        "B": ["two", "two", "#two"]})
-        df.to_excel(self.path, "test_c")
+            # Create file to read in
+            df = DataFrame({'A': ['one', '#one', 'one'],
+                            'B': ['two', 'two', '#two']})
+            df.to_excel(path, 'test_c')
 
-        # Test read_frame_comment against manually produced expected output.
-        expected = DataFrame({"A": ["one", None, "one"],
-                              "B": ["two", None, None]})
-        result = read_excel(self.path, "test_c", comment="#", index_col=0)
-        tm.assert_frame_equal(result, expected)
+            # Test read_frame_comment against manually produced expected output
+            expected = DataFrame({'A': ['one', None, 'one'],
+                                  'B': ['two', None, None]})
+            result = read_excel(path, 'test_c', comment='#')
+            tm.assert_frame_equal(result, expected)
 
-    def test_comment_empty_line(self, merge_cells, engine, ext):
+    def test_comment_emptyline(self):
         # Re issue #18735
         # Test that read_excel ignores commented lines at the end of file
+        with ensure_clean(self.ext) as path:
 
-        df = DataFrame({'a': ['1', '#2'], 'b': ['2', '3']})
-        df.to_excel(self.path, index=False)
+            df = DataFrame({'a': ['1', '#2'], 'b': ['2', '3']})
+            df.to_excel(path, index=False)
 
-        # Test that all-comment lines at EoF are ignored
-        expected = DataFrame({'a': [1], 'b': [2]})
-        result = read_excel(self.path, comment='#')
-        tm.assert_frame_equal(result, expected)
+            # Test that all-comment lines at EoF are ignored
+            expected = DataFrame({'a': [1], 'b': [2]})
+            result = read_excel(path, comment='#')
+            tm.assert_frame_equal(result, expected)
 
-    def test_datetimes(self, merge_cells, engine, ext):
+    def test_datetimes(self):
 
         # Test writing and reading datetimes. For issue #9139. (xref #9185)
+        _skip_if_no_xlrd()
+
         datetimes = [datetime(2013, 1, 13, 1, 2, 3),
                      datetime(2013, 1, 13, 2, 45, 56),
                      datetime(2013, 1, 13, 4, 29, 49),
@@ -2020,83 +1986,84 @@ class TestExcelWriter(_WriterBase):
                      datetime(2013, 1, 13, 16, 37, 0),
                      datetime(2013, 1, 13, 18, 20, 52)]
 
-        write_frame = DataFrame({'A': datetimes})
-        write_frame.to_excel(self.path, 'Sheet1')
-        read_frame = read_excel(self.path, 'Sheet1', header=0)
+        with ensure_clean(self.ext) as path:
+            write_frame = DataFrame({'A': datetimes})
+            write_frame.to_excel(path, 'Sheet1')
+            read_frame = read_excel(path, 'Sheet1', header=0)
 
-        tm.assert_series_equal(write_frame['A'], read_frame['A'])
+            tm.assert_series_equal(write_frame['A'], read_frame['A'])
 
-    def test_bytes_io(self, merge_cells, engine, ext):
-        # see gh-7074
+    # GH7074
+    def test_bytes_io(self):
+        _skip_if_no_xlrd()
+
         bio = BytesIO()
         df = DataFrame(np.random.randn(10, 2))
-
-        # Pass engine explicitly, as there is no file path to infer from.
-        writer = ExcelWriter(bio, engine=engine)
+        # pass engine explicitly as there is no file path to infer from
+        writer = ExcelWriter(bio, engine=self.engine_name)
         df.to_excel(writer)
         writer.save()
-
         bio.seek(0)
-        reread_df = read_excel(bio, index_col=0)
+        reread_df = read_excel(bio)
         tm.assert_frame_equal(df, reread_df)
 
-    def test_write_lists_dict(self, *_):
-        # see gh-8188.
-        df = DataFrame({"mixed": ["a", ["b", "c"], {"d": "e", "f": 2}],
-                        "numeric": [1, 2, 3.0],
-                        "str": ["apple", "banana", "cherry"]})
-        df.to_excel(self.path, "Sheet1")
-        read = read_excel(self.path, "Sheet1", header=0, index_col=0)
+    # GH8188
+    def test_write_lists_dict(self):
+        _skip_if_no_xlrd()
 
+        df = DataFrame({'mixed': ['a', ['b', 'c'], {'d': 'e', 'f': 2}],
+                        'numeric': [1, 2, 3.0],
+                        'str': ['apple', 'banana', 'cherry']})
         expected = df.copy()
         expected.mixed = expected.mixed.apply(str)
-        expected.numeric = expected.numeric.astype("int64")
+        expected.numeric = expected.numeric.astype('int64')
+        with ensure_clean(self.ext) as path:
+            df.to_excel(path, 'Sheet1')
+            read = read_excel(path, 'Sheet1', header=0)
+            tm.assert_frame_equal(read, expected)
 
-        tm.assert_frame_equal(read, expected)
+    # GH13347
+    def test_true_and_false_value_options(self):
+        df = pd.DataFrame([['foo', 'bar']], columns=['col1', 'col2'])
+        expected = df.replace({'foo': True,
+                               'bar': False})
+        with ensure_clean(self.ext) as path:
+            df.to_excel(path)
+            read_frame = read_excel(path, true_values=['foo'],
+                                    false_values=['bar'])
+            tm.assert_frame_equal(read_frame, expected)
 
-    def test_true_and_false_value_options(self, *_):
-        # see gh-13347
-        df = pd.DataFrame([["foo", "bar"]], columns=["col1", "col2"])
-        expected = df.replace({"foo": True, "bar": False})
+    def test_freeze_panes(self):
+        # GH15160
+        expected = DataFrame([[1, 2], [3, 4]], columns=['col1', 'col2'])
+        with ensure_clean(self.ext) as path:
+            expected.to_excel(path, "Sheet1", freeze_panes=(1, 1))
+            result = read_excel(path)
+            tm.assert_frame_equal(expected, result)
 
-        df.to_excel(self.path)
-        read_frame = read_excel(self.path, true_values=["foo"],
-                                false_values=["bar"], index_col=0)
-        tm.assert_frame_equal(read_frame, expected)
-
-    def test_freeze_panes(self, *_):
-        # see gh-15160
-        expected = DataFrame([[1, 2], [3, 4]], columns=["col1", "col2"])
-        expected.to_excel(self.path, "Sheet1", freeze_panes=(1, 1))
-
-        result = read_excel(self.path, index_col=0)
-        tm.assert_frame_equal(result, expected)
-
-    def test_path_path_lib(self, merge_cells, engine, ext):
+    def test_path_pathlib(self):
         df = tm.makeDataFrame()
-        writer = partial(df.to_excel, engine=engine)
-
-        reader = partial(pd.read_excel, index_col=0)
+        writer = partial(df.to_excel, engine=self.engine_name)
+        reader = partial(pd.read_excel)
         result = tm.round_trip_pathlib(writer, reader,
-                                       path="foo.{ext}".format(ext=ext))
-        tm.assert_frame_equal(result, df)
+                                       path="foo.{}".format(self.ext))
+        tm.assert_frame_equal(df, result)
 
-    def test_path_local_path(self, merge_cells, engine, ext):
+    def test_path_localpath(self):
         df = tm.makeDataFrame()
-        writer = partial(df.to_excel, engine=engine)
-
-        reader = partial(pd.read_excel, index_col=0)
+        writer = partial(df.to_excel, engine=self.engine_name)
+        reader = partial(pd.read_excel)
         result = tm.round_trip_pathlib(writer, reader,
-                                       path="foo.{ext}".format(ext=ext))
-        tm.assert_frame_equal(result, df)
+                                       path="foo.{}".format(self.ext))
+        tm.assert_frame_equal(df, result)
 
 
-@td.skip_if_no('openpyxl')
-@pytest.mark.parametrize("merge_cells,ext,engine", [
-    (None, '.xlsx', 'openpyxl')])
-class TestOpenpyxlTests(_WriterBase):
+class TestOpenpyxlTests(ExcelWriterBase):
+    engine_name = 'openpyxl'
+    ext = '.xlsx'
+    check_skip = staticmethod(_skip_if_no_openpyxl)
 
-    def test_to_excel_styleconverter(self, merge_cells, ext, engine):
+    def test_to_excel_styleconverter(self):
         from openpyxl import styles
 
         hstyle = {
@@ -2150,7 +2117,7 @@ class TestOpenpyxlTests(_WriterBase):
         assert kw['number_format'] == number_format
         assert kw['protection'] == protection
 
-    def test_write_cells_merge_styled(self, merge_cells, ext, engine):
+    def test_write_cells_merge_styled(self):
         from pandas.io.formats.excel import ExcelCell
 
         sheet_name = 'merge_styled'
@@ -2171,7 +2138,7 @@ class TestOpenpyxlTests(_WriterBase):
                       mergestart=1, mergeend=1, style=sty_merged),
         ]
 
-        with ensure_clean(ext) as path:
+        with ensure_clean('.xlsx') as path:
             writer = _OpenpyxlWriter(path)
             writer.write_cells(initial_cells, sheet_name=sheet_name)
             writer.write_cells(merge_cells, sheet_name=sheet_name)
@@ -2182,67 +2149,45 @@ class TestOpenpyxlTests(_WriterBase):
             assert xcell_b1.font == openpyxl_sty_merged
             assert xcell_a2.font == openpyxl_sty_merged
 
-    @pytest.mark.parametrize("mode,expected", [
-        ('w', ['baz']), ('a', ['foo', 'bar', 'baz'])])
-    def test_write_append_mode(self, merge_cells, ext, engine, mode, expected):
-        import openpyxl
-        df = DataFrame([1], columns=['baz'])
 
-        with ensure_clean(ext) as f:
-            wb = openpyxl.Workbook()
-            wb.worksheets[0].title = 'foo'
-            wb.worksheets[0]['A1'].value = 'foo'
-            wb.create_sheet('bar')
-            wb.worksheets[1]['A1'].value = 'bar'
-            wb.save(f)
+class TestXlwtTests(ExcelWriterBase):
+    ext = '.xls'
+    engine_name = 'xlwt'
+    check_skip = staticmethod(_skip_if_no_xlwt)
 
-            writer = ExcelWriter(f, engine=engine, mode=mode)
-            df.to_excel(writer, sheet_name='baz', index=False)
-            writer.save()
-
-            wb2 = openpyxl.load_workbook(f)
-            result = [sheet.title for sheet in wb2.worksheets]
-            assert result == expected
-
-            for index, cell_value in enumerate(expected):
-                assert wb2.worksheets[index]['A1'].value == cell_value
-
-
-@td.skip_if_no('xlwt')
-@pytest.mark.parametrize("merge_cells,ext,engine", [
-    (None, '.xls', 'xlwt')])
-class TestXlwtTests(_WriterBase):
-
-    def test_excel_raise_error_on_multiindex_columns_and_no_index(
-            self, merge_cells, ext, engine):
+    def test_excel_raise_error_on_multiindex_columns_and_no_index(self):
+        _skip_if_no_xlwt()
         # MultiIndex as columns is not yet implemented 9794
         cols = MultiIndex.from_tuples([('site', ''),
                                        ('2014', 'height'),
                                        ('2014', 'weight')])
         df = DataFrame(np.random.randn(10, 3), columns=cols)
         with pytest.raises(NotImplementedError):
-            with ensure_clean(ext) as path:
+            with ensure_clean(self.ext) as path:
                 df.to_excel(path, index=False)
 
-    def test_excel_multiindex_columns_and_index_true(self, merge_cells, ext,
-                                                     engine):
+    def test_excel_multiindex_columns_and_index_true(self):
+        _skip_if_no_xlwt()
         cols = MultiIndex.from_tuples([('site', ''),
                                        ('2014', 'height'),
                                        ('2014', 'weight')])
         df = pd.DataFrame(np.random.randn(10, 3), columns=cols)
-        with ensure_clean(ext) as path:
+        with ensure_clean(self.ext) as path:
             df.to_excel(path, index=True)
 
-    def test_excel_multiindex_index(self, merge_cells, ext, engine):
+    def test_excel_multiindex_index(self):
+        _skip_if_no_xlwt()
         # MultiIndex as index works so assert no error #9794
         cols = MultiIndex.from_tuples([('site', ''),
                                        ('2014', 'height'),
                                        ('2014', 'weight')])
         df = DataFrame(np.random.randn(3, 10), index=cols)
-        with ensure_clean(ext) as path:
+        with ensure_clean(self.ext) as path:
             df.to_excel(path, index=False)
 
-    def test_to_excel_styleconverter(self, merge_cells, ext, engine):
+    def test_to_excel_styleconverter(self):
+        _skip_if_no_xlwt()
+
         import xlwt
 
         hstyle = {"font": {"bold": True},
@@ -2261,29 +2206,24 @@ class TestXlwtTests(_WriterBase):
         assert xlwt.Alignment.HORZ_CENTER == xls_style.alignment.horz
         assert xlwt.Alignment.VERT_TOP == xls_style.alignment.vert
 
-    def test_write_append_mode_raises(self, merge_cells, ext, engine):
-        msg = "Append mode is not supported with xlwt!"
 
-        with ensure_clean(ext) as f:
-            with pytest.raises(ValueError, match=msg):
-                ExcelWriter(f, engine=engine, mode='a')
+class TestXlsxWriterTests(ExcelWriterBase):
+    ext = '.xlsx'
+    engine_name = 'xlsxwriter'
+    check_skip = staticmethod(_skip_if_no_xlsxwriter)
 
-
-@td.skip_if_no('xlsxwriter')
-@pytest.mark.parametrize("merge_cells,ext,engine", [
-    (None, '.xlsx', 'xlsxwriter')])
-class TestXlsxWriterTests(_WriterBase):
-
-    @td.skip_if_no('openpyxl')
-    def test_column_format(self, merge_cells, ext, engine):
+    def test_column_format(self):
         # Test that column formats are applied to cells. Test for issue #9167.
         # Applicable to xlsxwriter only.
+        _skip_if_no_xlsxwriter()
+
         with warnings.catch_warnings():
             # Ignore the openpyxl lxml warning.
             warnings.simplefilter("ignore")
+            _skip_if_no_openpyxl()
             import openpyxl
 
-        with ensure_clean(ext) as path:
+        with ensure_clean(self.ext) as path:
             frame = DataFrame({'A': [123456, 123456],
                                'B': [123456, 123456]})
 
@@ -2319,38 +2259,56 @@ class TestXlsxWriterTests(_WriterBase):
 
             assert read_num_format == num_format
 
-    def test_write_append_mode_raises(self, merge_cells, ext, engine):
-        msg = "Append mode is not supported with xlsxwriter!"
 
-        with ensure_clean(ext) as f:
-            with pytest.raises(ValueError, match=msg):
-                ExcelWriter(f, engine=engine, mode='a')
+class TestOpenpyxlTests_NoMerge(ExcelWriterBase):
+    ext = '.xlsx'
+    engine_name = 'openpyxl'
+    check_skip = staticmethod(_skip_if_no_openpyxl)
+
+    # Test < 0.13 non-merge behaviour for MultiIndex and Hierarchical Rows.
+    merge_cells = False
 
 
-class TestExcelWriterEngineTests:
+class TestXlwtTests_NoMerge(ExcelWriterBase):
+    ext = '.xls'
+    engine_name = 'xlwt'
+    check_skip = staticmethod(_skip_if_no_xlwt)
 
-    @pytest.mark.parametrize('klass,ext', [
-        pytest.param(_XlsxWriter, '.xlsx', marks=pytest.mark.skipif(
-            not td.safe_import('xlsxwriter'), reason='No xlsxwriter')),
-        pytest.param(_OpenpyxlWriter, '.xlsx', marks=pytest.mark.skipif(
-            not td.safe_import('openpyxl'), reason='No openpyxl')),
-        pytest.param(_XlwtWriter, '.xls', marks=pytest.mark.skipif(
-            not td.safe_import('xlwt'), reason='No xlwt'))
-    ])
-    def test_ExcelWriter_dispatch(self, klass, ext):
-        with ensure_clean(ext) as path:
-            writer = ExcelWriter(path)
-            if ext == '.xlsx' and td.safe_import('xlsxwriter'):
-                # xlsxwriter has preference over openpyxl if both installed
-                assert isinstance(writer, _XlsxWriter)
-            else:
-                assert isinstance(writer, klass)
+    # Test < 0.13 non-merge behaviour for MultiIndex and Hierarchical Rows.
+    merge_cells = False
 
-    def test_ExcelWriter_dispatch_raises(self):
-        with pytest.raises(ValueError, match='No engine'):
+
+class TestXlsxWriterTests_NoMerge(ExcelWriterBase):
+    ext = '.xlsx'
+    engine_name = 'xlsxwriter'
+    check_skip = staticmethod(_skip_if_no_xlsxwriter)
+
+    # Test < 0.13 non-merge behaviour for MultiIndex and Hierarchical Rows.
+    merge_cells = False
+
+
+class TestExcelWriterEngineTests(object):
+
+    def test_ExcelWriter_dispatch(self):
+        with tm.assert_raises_regex(ValueError, 'No engine'):
             ExcelWriter('nothing')
 
-    @pytest.mark.filterwarnings("ignore:\\nPanel:FutureWarning")
+        try:
+            import xlsxwriter  # noqa
+            writer_klass = _XlsxWriter
+        except ImportError:
+            _skip_if_no_openpyxl()
+            writer_klass = _OpenpyxlWriter
+
+        with ensure_clean('.xlsx') as path:
+            writer = ExcelWriter(path)
+            assert isinstance(writer, writer_klass)
+
+        _skip_if_no_xlwt()
+        with ensure_clean('.xls') as path:
+            writer = ExcelWriter(path)
+            assert isinstance(writer, _XlwtWriter)
+
     def test_register_writer(self):
         # some awkward mocking to test out dispatch and such actually works
         called_save = []
@@ -2359,7 +2317,7 @@ class TestExcelWriterEngineTests:
         class DummyClass(ExcelWriter):
             called_save = False
             called_write_cells = False
-            supported_extensions = ['xlsx', 'xls']
+            supported_extensions = ['test', 'xlsx', 'xls']
             engine = 'dummy'
 
             def save(self):
@@ -2377,13 +2335,19 @@ class TestExcelWriterEngineTests:
 
         with pd.option_context('io.excel.xlsx.writer', 'dummy'):
             register_writer(DummyClass)
-            writer = ExcelWriter('something.xlsx')
+            writer = ExcelWriter('something.test')
             assert isinstance(writer, DummyClass)
             df = tm.makeCustomDataframe(1, 1)
-            check_called(lambda: df.to_excel('something.xlsx'))
-            check_called(
-                lambda: df.to_excel(
-                    'something.xls', engine='dummy'))
+
+            with catch_warnings(record=True):
+                panel = tm.makePanel()
+                func = lambda: df.to_excel('something.test')
+                check_called(func)
+                check_called(lambda: panel.to_excel('something.test'))
+                check_called(lambda: df.to_excel('something.xlsx'))
+                check_called(
+                    lambda: df.to_excel(
+                        'something.xls', engine='dummy'))
 
 
 @pytest.mark.parametrize('engine', [
@@ -2404,16 +2368,12 @@ def test_styler_to_excel(engine):
                           ['', 'font-style: italic', ''],
                           ['', '', 'text-align: right'],
                           ['background-color: red', '', ''],
-                          ['number-format: 0%', '', ''],
                           ['', '', ''],
                           ['', '', ''],
                           ['', '', '']],
                          index=df.index, columns=df.columns)
 
-    def assert_equal_style(cell1, cell2, engine):
-        if engine in ['xlsxwriter', 'openpyxl']:
-            pytest.xfail(reason=("GH25351: failing on some attribute "
-                                 "comparisons in {}".format(engine)))
+    def assert_equal_style(cell1, cell2):
         # XXX: should find a better way to check equality
         assert cell1.alignment.__dict__ == cell2.alignment.__dict__
         assert cell1.border.__dict__ == cell2.border.__dict__
@@ -2433,7 +2393,7 @@ def test_styler_to_excel(engine):
 
     # Prepare spreadsheets
 
-    df = DataFrame(np.random.randn(11, 3))
+    df = DataFrame(np.random.randn(10, 3))
     with ensure_clean('.xlsx' if engine != 'xlwt' else '.xls') as path:
         writer = ExcelWriter(path, engine=engine)
         df.to_excel(writer, sheet_name='frame')
@@ -2457,11 +2417,11 @@ def test_styler_to_excel(engine):
             assert len(col1) == len(col2)
             for cell1, cell2 in zip(col1, col2):
                 assert cell1.value == cell2.value
-                assert_equal_style(cell1, cell2, engine)
+                assert_equal_style(cell1, cell2)
                 n_cells += 1
 
         # ensure iteration actually happened:
-        assert n_cells == (11 + 1) * (3 + 1)
+        assert n_cells == (10 + 1) * (3 + 1)
 
         # (2) check styling with default converter
 
@@ -2511,16 +2471,13 @@ def test_styler_to_excel(engine):
                     assert cell1.fill.patternType != cell2.fill.patternType
                     assert cell2.fill.fgColor.rgb == alpha + 'FF0000'
                     assert cell2.fill.patternType == 'solid'
-                elif ref == 'B9':
-                    assert cell1.number_format == 'General'
-                    assert cell2.number_format == '0%'
                 else:
-                    assert_equal_style(cell1, cell2, engine)
+                    assert_equal_style(cell1, cell2)
 
                 assert cell1.value == cell2.value
                 n_cells += 1
 
-        assert n_cells == (11 + 1) * (3 + 1)
+        assert n_cells == (10 + 1) * (3 + 1)
 
         # (3) check styling with custom converter
         n_cells = 0
@@ -2529,23 +2486,23 @@ def test_styler_to_excel(engine):
             assert len(col1) == len(col2)
             for cell1, cell2 in zip(col1, col2):
                 ref = '%s%d' % (cell2.column, cell2.row)
-                if ref in ('B2', 'C3', 'D4', 'B5', 'C6', 'D7', 'B8', 'B9'):
+                if ref in ('B2', 'C3', 'D4', 'B5', 'C6', 'D7', 'B8'):
                     assert not cell1.font.bold
                     assert cell2.font.bold
                 else:
-                    assert_equal_style(cell1, cell2, engine)
+                    assert_equal_style(cell1, cell2)
 
                 assert cell1.value == cell2.value
                 n_cells += 1
 
-        assert n_cells == (11 + 1) * (3 + 1)
+        assert n_cells == (10 + 1) * (3 + 1)
 
 
-@td.skip_if_no('openpyxl')
-@pytest.mark.skipif(not PY36, reason='requires fspath')
-class TestFSPath:
+class TestFSPath(object):
 
+    @pytest.mark.skipif(sys.version_info < (3, 6), reason='requires fspath')
     def test_excelfile_fspath(self):
+        _skip_if_no_openpyxl()
         with tm.ensure_clean('foo.xlsx') as path:
             df = DataFrame({"A": [1, 2]})
             df.to_excel(path)
@@ -2553,7 +2510,10 @@ class TestFSPath:
             result = os.fspath(xl)
             assert result == path
 
+    @pytest.mark.skipif(sys.version_info < (3, 6), reason='requires fspath')
+    # @pytest.mark.xfail
     def test_excelwriter_fspath(self):
+        _skip_if_no_openpyxl()
         with tm.ensure_clean('foo.xlsx') as path:
             writer = ExcelWriter(path)
             assert os.fspath(writer) == str(path)

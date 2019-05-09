@@ -20,7 +20,18 @@ Python recipe (http://rhettinger.wordpress.com/2010/02/06/lost-knowledge/)
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "inline_helper.h"
+
+#ifndef PANDAS_INLINE
+#if defined(__GNUC__)
+#define PANDAS_INLINE static __inline__
+#elif defined(_MSC_VER)
+#define PANDAS_INLINE static __inline
+#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L
+#define PANDAS_INLINE static inline
+#else
+#define PANDAS_INLINE
+#endif
+#endif
 
 PANDAS_INLINE float __skiplist_nanf(void) {
     const union {

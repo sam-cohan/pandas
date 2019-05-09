@@ -23,11 +23,12 @@ except ImportError:
             return fname
         return wrapper
 
-from .pandas_vb_common import BaseIO
+from .pandas_vb_common import BaseIO, setup  # noqa
 
 
-class ParallelGroupbyMethods:
+class ParallelGroupbyMethods(object):
 
+    goal_time = 0.2
     params = ([2, 4, 8], ['count', 'last', 'max', 'mean', 'min', 'prod',
                           'sum', 'var'])
     param_names = ['threads', 'method']
@@ -57,8 +58,9 @@ class ParallelGroupbyMethods:
             self.loop()
 
 
-class ParallelGroups:
+class ParallelGroups(object):
 
+    goal_time = 0.2
     params = [2, 4, 8]
     param_names = ['threads']
 
@@ -78,8 +80,9 @@ class ParallelGroups:
         self.get_groups()
 
 
-class ParallelTake1D:
+class ParallelTake1D(object):
 
+    goal_time = 0.2
     params = ['int64', 'float64']
     param_names = ['dtype']
 
@@ -99,7 +102,7 @@ class ParallelTake1D:
         self.parallel_take1d()
 
 
-class ParallelKth:
+class ParallelKth(object):
 
     number = 1
     repeat = 5
@@ -121,7 +124,9 @@ class ParallelKth:
         self.parallel_kth_smallest()
 
 
-class ParallelDatetimeFields:
+class ParallelDatetimeFields(object):
+
+    goal_time = 0.2
 
     def setup(self):
         if not have_real_test_parallel:
@@ -167,8 +172,9 @@ class ParallelDatetimeFields:
         run(self.period)
 
 
-class ParallelRolling:
+class ParallelRolling(object):
 
+    goal_time = 0.2
     params = ['median', 'mean', 'min', 'max', 'var', 'skew', 'kurt', 'std']
     param_names = ['method']
 
@@ -239,7 +245,7 @@ class ParallelReadCSV(BaseIO):
         self.parallel_read_csv()
 
 
-class ParallelFactorize:
+class ParallelFactorize(object):
 
     number = 1
     repeat = 5
@@ -267,6 +273,3 @@ class ParallelFactorize:
     def time_loop(self, threads):
         for i in range(threads):
             self.loop()
-
-
-from .pandas_vb_common import setup  # noqa: F401

@@ -1,12 +1,14 @@
 # coding: utf-8
-from io import BytesIO
+
+from pandas import compat
+from pandas.io.msgpack import Unpacker, BufferFull
+from pandas.io.msgpack import OutOfData
 
 import pytest
+import pandas.util.testing as tm
 
-from pandas.io.msgpack import BufferFull, OutOfData, Unpacker
 
-
-class TestPack:
+class TestPack(object):
 
     def test_partial_data(self):
         unpacker = Unpacker()
@@ -14,7 +16,7 @@ class TestPack:
 
         for data in [b"\xa5", b"h", b"a", b"l", b"l"]:
             unpacker.feed(data)
-            with pytest.raises(StopIteration, match=msg):
+            with tm.assert_raises_regex(StopIteration, msg):
                 next(iter(unpacker))
 
         unpacker.feed(b"o")
@@ -29,9 +31,7 @@ class TestPack:
         assert unpacker.unpack() == ord(b'b')
         assert unpacker.unpack() == ord(b'a')
         assert unpacker.unpack() == ord(b'r')
-        msg = "No more data to unpack"
-        with pytest.raises(OutOfData, match=msg):
-            unpacker.unpack()
+        pytest.raises(OutOfData, unpacker.unpack)
 
         unpacker.feed(b'foo')
         unpacker.feed(b'bar')
@@ -51,24 +51,14 @@ class TestPack:
         unpacker.skip()
         assert unpacker.unpack() == ord(b'a')
         unpacker.skip()
-        msg = "No more data to unpack"
-        with pytest.raises(OutOfData, match=msg):
-            unpacker.unpack()
-
-    def test_maxbuffersize_read_size_exceeds_max_buffer_size(self):
-        msg = "read_size should be less or equal to max_buffer_size"
-        with pytest.raises(ValueError, match=msg):
-            Unpacker(read_size=5, max_buffer_size=3)
-
-    def test_maxbuffersize_bufferfull(self):
-        unpacker = Unpacker(read_size=3, max_buffer_size=3, use_list=1)
-        unpacker.feed(b'foo')
-        with pytest.raises(BufferFull, match=r'^$'):
-            unpacker.feed(b'b')
+        pytest.raises(OutOfData, unpacker.unpack)
 
     def test_maxbuffersize(self):
+        pytest.raises(ValueError, Unpacker, read_size=5, max_buffer_size=3)
         unpacker = Unpacker(read_size=3, max_buffer_size=3, use_list=1)
-        unpacker.feed(b'foo')
+        unpacker.feed(b'fo')
+        pytest.raises(BufferFull, unpacker.feed, b'ob')
+        unpacker.feed(b'o')
         assert ord('f') == next(unpacker)
         unpacker.feed(b'b')
         assert ord('o') == next(unpacker)
@@ -84,7 +74,7 @@ class TestPack:
         assert unpacker.unpack() == ord(b'r')
 
         # Test buffer refill
-        unpacker = Unpacker(BytesIO(b'foobar'), read_size=3)
+        unpacker = Unpacker(compat.BytesIO(b'foobar'), read_size=3)
         assert unpacker.unpack() == ord(b'f')
         assert unpacker.read_bytes(3) == b'oob'
         assert unpacker.unpack() == ord(b'a')

@@ -1,21 +1,33 @@
-from datetime import datetime, timedelta
-from importlib import reload
-import string
-import sys
+# coding=utf-8
+# pylint: disable-msg=E1101,W0612
 
-import numpy as np
 import pytest
 
-from pandas._libs.tslibs import iNaT
+from datetime import datetime, timedelta
 
+import sys
+import string
+import warnings
+
+from numpy import nan
 import pandas as pd
+import numpy as np
+
 from pandas import (
-    Categorical, DataFrame, Index, Series, Timedelta, Timestamp, date_range)
+    Series, Timestamp, Timedelta, DataFrame, date_range,
+    Categorical, Index
+)
 from pandas.api.types import CategoricalDtype
+import pandas._libs.tslib as tslib
+
+from pandas.compat import lrange, range, u
+from pandas import compat
 import pandas.util.testing as tm
 
+from .common import TestData
 
-class TestSeriesDtypes:
+
+class TestSeriesDtypes(TestData):
 
     def test_dt64_series_astype_object(self):
         dt64ser = Series(date_range('20130101', periods=3))
@@ -44,18 +56,16 @@ class TestSeriesDtypes:
             o = s.asobject
         assert isinstance(o, np.ndarray)
 
-    def test_dtype(self, datetime_series):
+    def test_dtype(self):
 
-        assert datetime_series.dtype == np.dtype('float64')
-        assert datetime_series.dtypes == np.dtype('float64')
-        assert datetime_series.ftype == 'float64:dense'
-        assert datetime_series.ftypes == 'float64:dense'
-        tm.assert_series_equal(datetime_series.get_dtype_counts(),
+        assert self.ts.dtype == np.dtype('float64')
+        assert self.ts.dtypes == np.dtype('float64')
+        assert self.ts.ftype == 'float64:dense'
+        assert self.ts.ftypes == 'float64:dense'
+        tm.assert_series_equal(self.ts.get_dtype_counts(),
                                Series(1, ['float64']))
-        # GH18243 - Assert .get_ftype_counts is deprecated
-        with tm.assert_produces_warning(FutureWarning):
-            tm.assert_series_equal(datetime_series.get_ftype_counts(),
-                                   Series(1, ['float64:dense']))
+        tm.assert_series_equal(self.ts.get_ftype_counts(),
+                               Series(1, ['float64:dense']))
 
     @pytest.mark.parametrize("value", [np.nan, np.inf])
     @pytest.mark.parametrize("dtype", [np.int32, np.int64])
@@ -64,14 +74,13 @@ class TestSeriesDtypes:
         msg = 'Cannot convert non-finite values \\(NA or inf\\) to integer'
         s = Series([value])
 
-        with pytest.raises(ValueError, match=msg):
+        with tm.assert_raises_regex(ValueError, msg):
             s.astype(dtype)
 
     @pytest.mark.parametrize("dtype", [int, np.int8, np.int64])
     def test_astype_cast_object_int_fail(self, dtype):
         arr = Series(["car", "house", "tree", "1"])
-        msg = r"invalid literal for int\(\) with base 10: 'car'"
-        with pytest.raises(ValueError, match=msg):
+        with pytest.raises(ValueError):
             arr.astype(dtype)
 
     def test_astype_cast_object_int(self):
@@ -81,7 +90,7 @@ class TestSeriesDtypes:
         tm.assert_series_equal(result, Series(np.arange(1, 5)))
 
     def test_astype_datetime(self):
-        s = Series(iNaT, dtype='M8[ns]', index=range(5))
+        s = Series(tslib.iNaT, dtype='M8[ns]', index=lrange(5))
 
         s = s.astype('O')
         assert s.dtype == np.object_
@@ -126,38 +135,40 @@ class TestSeriesDtypes:
         expected = Series(date_range('20130101 06:00:00', periods=3, tz='CET'))
         tm.assert_series_equal(result, expected)
 
-    @pytest.mark.parametrize("dtype", [str, np.str_])
+    @pytest.mark.parametrize("dtype", [compat.text_type, np.str_])
     @pytest.mark.parametrize("series", [Series([string.digits * 10,
                                                 tm.rands(63),
                                                 tm.rands(64),
                                                 tm.rands(1000)]),
                                         Series([string.digits * 10,
                                                 tm.rands(63),
-                                                tm.rands(64), np.nan, 1.0])])
+                                                tm.rands(64), nan, 1.0])])
     def test_astype_str_map(self, dtype, series):
         # see gh-4405
         result = series.astype(dtype)
-        expected = series.map(str)
+        expected = series.map(compat.text_type)
         tm.assert_series_equal(result, expected)
 
-    def test_astype_str_cast(self):
-        # see gh-9757
+    @pytest.mark.parametrize("dtype", [str, compat.text_type])
+    def test_astype_str_cast(self, dtype):
+        # see gh-9757: test str and unicode on python 2.x
+        # and just str on python 3.x
         ts = Series([Timestamp('2010-01-04 00:00:00')])
-        s = ts.astype(str)
+        s = ts.astype(dtype)
 
-        expected = Series([str('2010-01-04')])
+        expected = Series([dtype('2010-01-04')])
         tm.assert_series_equal(s, expected)
 
         ts = Series([Timestamp('2010-01-04 00:00:00', tz='US/Eastern')])
-        s = ts.astype(str)
+        s = ts.astype(dtype)
 
-        expected = Series([str('2010-01-04 00:00:00-05:00')])
+        expected = Series([dtype('2010-01-04 00:00:00-05:00')])
         tm.assert_series_equal(s, expected)
 
         td = Series([Timedelta(1, unit='d')])
-        s = td.astype(str)
+        s = td.astype(dtype)
 
-        expected = Series([str('1 days 00:00:00.000000000')])
+        expected = Series([dtype('1 days 00:00:00.000000000')])
         tm.assert_series_equal(s, expected)
 
     def test_astype_unicode(self):
@@ -166,23 +177,29 @@ class TestSeriesDtypes:
         digits = string.digits
         test_series = [
             Series([digits * 10, tm.rands(63), tm.rands(64), tm.rands(1000)]),
-            Series(['データーサイエンス、お前はもう死んでいる']),
+            Series([u('データーサイエンス、お前はもう死んでいる')]),
         ]
 
         former_encoding = None
 
+        if not compat.PY3:
+            # In Python, we can force the default encoding for this test
+            former_encoding = sys.getdefaultencoding()
+            reload(sys)  # noqa
+
+            sys.setdefaultencoding("utf-8")
         if sys.getdefaultencoding() == "utf-8":
-            test_series.append(Series(['野菜食べないとやばい'
+            test_series.append(Series([u('野菜食べないとやばい')
                                        .encode("utf-8")]))
 
         for s in test_series:
             res = s.astype("unicode")
-            expec = s.map(str)
+            expec = s.map(compat.text_type)
             tm.assert_series_equal(res, expec)
 
         # Restore the former encoding
         if former_encoding is not None and former_encoding != "utf-8":
-            reload(sys)
+            reload(sys)  # noqa
             sys.setdefaultencoding(former_encoding)
 
     @pytest.mark.parametrize("dtype_class", [dict, Series])
@@ -202,19 +219,17 @@ class TestSeriesDtypes:
         tm.assert_series_equal(result, expected)
 
         dt3 = dtype_class({'abc': str, 'def': str})
-        msg = ("Only the Series name can be used for the key in Series dtype"
-               r" mappings\.")
-        with pytest.raises(KeyError, match=msg):
+        with pytest.raises(KeyError):
             s.astype(dt3)
 
         dt4 = dtype_class({0: str})
-        with pytest.raises(KeyError, match=msg):
+        with pytest.raises(KeyError):
             s.astype(dt4)
 
         # GH16717
         # if dtypes provided is empty, it should error
         dt5 = dtype_class({})
-        with pytest.raises(KeyError, match=msg):
+        with pytest.raises(KeyError):
             s.astype(dt5)
 
     def test_astype_categories_deprecation(self):
@@ -228,15 +243,15 @@ class TestSeriesDtypes:
         tm.assert_series_equal(result, expected)
 
     def test_astype_from_categorical(self):
-        items = ["a", "b", "c", "a"]
-        s = Series(items)
-        exp = Series(Categorical(items))
+        l = ["a", "b", "c", "a"]
+        s = Series(l)
+        exp = Series(Categorical(l))
         res = s.astype('category')
         tm.assert_series_equal(res, exp)
 
-        items = [1, 2, 3, 1]
-        s = Series(items)
-        exp = Series(Categorical(items))
+        l = [1, 2, 3, 1]
+        s = Series(l)
+        exp = Series(Categorical(l))
         res = s.astype('category')
         tm.assert_series_equal(res, exp)
 
@@ -255,20 +270,19 @@ class TestSeriesDtypes:
         tm.assert_frame_equal(exp_df, df)
 
         # with keywords
-        lst = ["a", "b", "c", "a"]
-        s = Series(lst)
-        exp = Series(Categorical(lst, ordered=True))
+        l = ["a", "b", "c", "a"]
+        s = Series(l)
+        exp = Series(Categorical(l, ordered=True))
         res = s.astype(CategoricalDtype(None, ordered=True))
         tm.assert_series_equal(res, exp)
 
-        exp = Series(Categorical(lst, categories=list('abcdef'), ordered=True))
+        exp = Series(Categorical(l, categories=list('abcdef'), ordered=True))
         res = s.astype(CategoricalDtype(list('abcdef'), ordered=True))
         tm.assert_series_equal(res, exp)
 
     def test_astype_categorical_to_other(self):
 
-        value = np.random.RandomState(0).randint(0, 10000, 100)
-        df = DataFrame({'value': value})
+        df = DataFrame({'value': np.random.randint(0, 10000, 100)})
         labels = ["{0} - {1}".format(i, i + 499) for i in range(0, 10000, 500)]
         cat_labels = Categorical(labels, labels)
 
@@ -280,10 +294,7 @@ class TestSeriesDtypes:
         expected = s
         tm.assert_series_equal(s.astype('category'), expected)
         tm.assert_series_equal(s.astype(CategoricalDtype()), expected)
-        msg = (r"could not convert string to float|"
-               r"invalid literal for float\(\)")
-        with pytest.raises(ValueError, match=msg):
-            s.astype('float64')
+        pytest.raises(ValueError, lambda: s.astype('float64'))
 
         cat = Series(Categorical(['a', 'b', 'b', 'a', 'a', 'c', 'c', 'c']))
         exp = Series(['a', 'b', 'b', 'a', 'a', 'c', 'c', 'c'])
@@ -319,12 +330,9 @@ class TestSeriesDtypes:
             tm.assert_series_equal(result, s, check_categorical=False)
 
         # invalid conversion (these are NOT a dtype)
-        msg = (r"invalid type <class 'pandas\.core\.arrays\.categorical\."
-               "Categorical'> for astype")
         for invalid in [lambda x: x.astype(Categorical),
                         lambda x: x.astype('object').astype(Categorical)]:
-            with pytest.raises(TypeError, match=msg):
-                invalid(s)
+            pytest.raises(TypeError, lambda: invalid(s))
 
     @pytest.mark.parametrize('name', [None, 'foo'])
     @pytest.mark.parametrize('dtype_ordered', [True, False])
@@ -385,42 +393,45 @@ class TestSeriesDtypes:
         s = Series(['a', 'b'])
         type_ = CategoricalDtype(['a', 'b'])
 
-        msg = (r"Cannot specify a CategoricalDtype and also `categories` or"
-               r" `ordered`\. Use `dtype=CategoricalDtype\(categories,"
-               r" ordered\)` instead\.")
-        with pytest.raises(TypeError, match=msg):
+        with pytest.raises(TypeError):
             s.astype(type_, ordered=True)
-        with pytest.raises(TypeError, match=msg):
+        with pytest.raises(TypeError):
             s.astype(type_, categories=['a', 'b'])
-        with pytest.raises(TypeError, match=msg):
+        with pytest.raises(TypeError):
             s.astype(type_, categories=['a', 'b'], ordered=False)
 
-    @pytest.mark.parametrize("dtype", [
-        np.datetime64,
-        np.timedelta64,
-    ])
-    def test_astype_generic_timestamp_no_frequency(self, dtype):
-        # see gh-15524, gh-15987
+    def test_astype_generic_timestamp_deprecated(self):
+        # see gh-15524
         data = [1]
-        s = Series(data)
 
-        msg = ((r"The '{dtype}' dtype has no unit\. "
-                r"Please pass in '{dtype}\[ns\]' instead.")
-               .format(dtype=dtype.__name__))
-        with pytest.raises(ValueError, match=msg):
-            s.astype(dtype)
+        with tm.assert_produces_warning(FutureWarning,
+                                        check_stacklevel=False):
+            s = Series(data)
+            dtype = np.datetime64
+            result = s.astype(dtype)
+            expected = Series(data, dtype=dtype)
+            tm.assert_series_equal(result, expected)
+
+        with tm.assert_produces_warning(FutureWarning,
+                                        check_stacklevel=False):
+            s = Series(data)
+            dtype = np.timedelta64
+            result = s.astype(dtype)
+            expected = Series(data, dtype=dtype)
+            tm.assert_series_equal(result, expected)
 
     @pytest.mark.parametrize("dtype", np.typecodes['All'])
     def test_astype_empty_constructor_equality(self, dtype):
         # see gh-15524
 
-        if dtype not in (
-            "S", "V",  # poor support (if any) currently
-            "M", "m"   # Generic timestamps raise a ValueError. Already tested.
-        ):
-            init_empty = Series([], dtype=dtype)
-            as_type_empty = Series([]).astype(dtype)
-            tm.assert_series_equal(init_empty, as_type_empty)
+        if dtype not in ('S', 'V'):  # poor support (if any) currently
+            with warnings.catch_warnings(record=True):
+                # Generic timestamp dtypes ('M' and 'm') are deprecated,
+                # but we test that already in series/test_constructors.py
+
+                init_empty = Series([], dtype=dtype)
+                as_type_empty = Series([]).astype(dtype)
+                tm.assert_series_equal(init_empty, as_type_empty)
 
     def test_complex(self):
         # see gh-4819: complex access for ndarray compat
@@ -438,10 +449,11 @@ class TestSeriesDtypes:
         # see gh-14878
         s = Series([1, 2, 3])
 
-        msg = (r"Expected value of kwarg 'errors' to be one of \['raise',"
-               r" 'ignore'\]\. Supplied value is 'False'")
-        with pytest.raises(ValueError, match=msg):
+        with pytest.raises(ValueError):
             s.astype(np.float64, errors=False)
+
+        with tm.assert_produces_warning(FutureWarning):
+            s.astype(np.int8, raise_on_error=True)
 
         s.astype(np.int8, errors='raise')
 
@@ -492,18 +504,3 @@ class TestSeriesDtypes:
 
         assert actual.dtype == 'object'
         tm.assert_series_equal(actual, expected)
-
-    def test_is_homogeneous_type(self):
-        assert Series()._is_homogeneous_type
-        assert Series([1, 2])._is_homogeneous_type
-        assert Series(pd.Categorical([1, 2]))._is_homogeneous_type
-
-    @pytest.mark.parametrize("data", [
-        pd.period_range("2000", periods=4),
-        pd.IntervalIndex.from_breaks([1, 2, 3, 4])
-    ])
-    def test_values_compatibility(self, data):
-        # https://github.com/pandas-dev/pandas/issues/23995
-        result = pd.Series(data).values
-        expected = np.array(data.astype(object))
-        tm.assert_numpy_array_equal(result, expected)

@@ -6,8 +6,12 @@ try:
 except ImportError:
     import pandas.computation.expressions as expr
 
+from .pandas_vb_common import setup # noqa
 
-class Ops:
+
+class Ops(object):
+
+    goal_time = 0.2
 
     params = [[True, False], ['default', 1]]
     param_names = ['use_numexpr', 'threads']
@@ -38,7 +42,9 @@ class Ops:
         expr.set_numexpr_threads()
 
 
-class Ops2:
+class Ops2(object):
+
+    goal_time = 0.2
 
     def setup(self):
         N = 10**3
@@ -51,8 +57,6 @@ class Ops2:
         self.df2_int = DataFrame(np.random.randint(np.iinfo(np.int16).min,
                                                    np.iinfo(np.int16).max,
                                                    size=(N, N)))
-
-        self.s = Series(np.random.randn(N))
 
     # Division
 
@@ -76,19 +80,10 @@ class Ops2:
     def time_frame_float_mod(self):
         self.df % self.df2
 
-    # Dot product
 
-    def time_frame_dot(self):
-        self.df.dot(self.df2)
+class Timeseries(object):
 
-    def time_series_dot(self):
-        self.s.dot(self.s)
-
-    def time_frame_series_dot(self):
-        self.df.dot(self.s)
-
-
-class Timeseries:
+    goal_time = 0.2
 
     params = [None, 'US/Eastern']
     param_names = ['tz']
@@ -114,7 +109,9 @@ class Timeseries:
         self.s - self.s.shift()
 
 
-class AddOverflowScalar:
+class AddOverflowScalar(object):
+
+    goal_time = 0.2
 
     params = [1, -1, 0]
     param_names = ['scalar']
@@ -127,7 +124,9 @@ class AddOverflowScalar:
         checked_add_with_arr(self.arr, scalar)
 
 
-class AddOverflowArray:
+class AddOverflowArray(object):
+
+    goal_time = 0.2
 
     def setup(self):
         N = 10**6
@@ -150,6 +149,3 @@ class AddOverflowArray:
     def time_add_overflow_both_arg_nan(self):
         checked_add_with_arr(self.arr, self.arr_mixed, arr_mask=self.arr_nan_1,
                              b_mask=self.arr_nan_2)
-
-
-from .pandas_vb_common import setup  # noqa: F401

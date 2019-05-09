@@ -1,20 +1,24 @@
+# cython: profile=False
+
 cimport cython
 
-from cpython cimport (PyObject, Py_INCREF,
-                      PyMem_Malloc, PyMem_Realloc, PyMem_Free)
+from cpython cimport (PyObject, Py_INCREF, PyList_Check, PyTuple_Check,
+                      PyMem_Malloc, PyMem_Realloc, PyMem_Free,
+                      PyString_Check, PyBytes_Check,
+                      PyUnicode_Check)
 
 from libc.stdlib cimport malloc, free
 
 import numpy as np
 cimport numpy as cnp
-from numpy cimport ndarray, uint8_t, uint32_t, float64_t
+from numpy cimport ndarray, uint8_t, uint32_t
 cnp.import_array()
 
 cdef extern from "numpy/npy_math.h":
-    float64_t NAN "NPY_NAN"
+    double NAN "NPY_NAN"
 
 
-from pandas._libs.khash cimport (
+from khash cimport (
     khiter_t,
 
     kh_str_t, kh_init_str, kh_put_str, kh_exist_str,
@@ -35,12 +39,15 @@ from pandas._libs.khash cimport (
     kh_put_pymap, kh_resize_pymap)
 
 
-cimport pandas._libs.util as util
+from util cimport _checknan
+cimport util
 
-from pandas._libs.missing cimport checknull
+from missing cimport checknull
 
 
-cdef int64_t NPY_NAT = util.get_nat()
+nan = np.nan
+
+cdef int64_t iNaT = util.get_nat()
 _SIZE_HINT_LIMIT = (1 << 20) + 7
 
 
@@ -50,10 +57,9 @@ include "hashtable_class_helper.pxi"
 include "hashtable_func_helper.pxi"
 
 cdef class Factorizer:
-    cdef public:
-        PyObjectHashTable table
-        ObjectVector uniques
-        Py_ssize_t count
+    cdef public PyObjectHashTable table
+    cdef public ObjectVector uniques
+    cdef public Py_ssize_t count
 
     def __init__(self, size_hint):
         self.table = PyObjectHashTable(size_hint)
@@ -64,7 +70,7 @@ cdef class Factorizer:
         return self.count
 
     def factorize(self, ndarray[object] values, sort=False, na_sentinel=-1,
-                  na_value=None):
+                  check_null=True):
         """
         Factorize values with nans replaced by na_sentinel
         >>> factorize(np.array([1,2,np.nan], dtype='O'), na_sentinel=20)
@@ -75,7 +81,7 @@ cdef class Factorizer:
             uniques.extend(self.uniques.to_array())
             self.uniques = uniques
         labels = self.table.get_labels(values, self.uniques,
-                                       self.count, na_sentinel, na_value)
+                                       self.count, na_sentinel, check_null)
         mask = (labels == na_sentinel)
         # sort on
         if sort:
@@ -95,10 +101,9 @@ cdef class Factorizer:
 
 
 cdef class Int64Factorizer:
-    cdef public:
-        Int64HashTable table
-        Int64Vector uniques
-        Py_ssize_t count
+    cdef public Int64HashTable table
+    cdef public Int64Vector uniques
+    cdef public Py_ssize_t count
 
     def __init__(self, size_hint):
         self.table = Int64HashTable(size_hint)
@@ -109,7 +114,7 @@ cdef class Int64Factorizer:
         return self.count
 
     def factorize(self, int64_t[:] values, sort=False,
-                  na_sentinel=-1, na_value=None):
+                  na_sentinel=-1, check_null=True):
         """
         Factorize values with nans replaced by na_sentinel
         >>> factorize(np.array([1,2,np.nan], dtype='O'), na_sentinel=20)
@@ -121,7 +126,7 @@ cdef class Int64Factorizer:
             self.uniques = uniques
         labels = self.table.get_labels(values, self.uniques,
                                        self.count, na_sentinel,
-                                       na_value=na_value)
+                                       check_null)
 
         # sort on
         if sort:
@@ -140,7 +145,7 @@ cdef class Int64Factorizer:
 
 @cython.wraparound(False)
 @cython.boundscheck(False)
-def unique_label_indices(const int64_t[:] labels):
+def unique_label_indices(ndarray[int64_t, ndim=1] labels):
     """
     indices of the first occurrences of the unique labels
     *excluding* -1. equivalent to:
@@ -149,7 +154,7 @@ def unique_label_indices(const int64_t[:] labels):
     cdef:
         int ret = 0
         Py_ssize_t i, n = len(labels)
-        kh_int64_t *table = kh_init_int64()
+        kh_int64_t * table = kh_init_int64()
         Int64Vector idx = Int64Vector()
         ndarray[int64_t, ndim=1] arr
         Int64VectorData *ud = idx.data
@@ -168,6 +173,6 @@ def unique_label_indices(const int64_t[:] labels):
     kh_destroy_int64(table)
 
     arr = idx.to_array()
-    arr = arr[np.asarray(labels)[arr].argsort()]
+    arr = arr[labels[arr].argsort()]
 
     return arr[1:] if arr.size != 0 and labels[arr[0]] == -1 else arr

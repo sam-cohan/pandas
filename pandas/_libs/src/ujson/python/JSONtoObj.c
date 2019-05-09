@@ -35,12 +35,14 @@ http://www.opensource.apple.com/source/tcl/tcl-14/tcl/license.terms
  * Copyright (c) 1994 Sun Microsystems, Inc.
 */
 
+// "py_defines.h" needs to be included first to
+// avoid compilation errors, but it does violate
+// styleguide checks with regards to include order.
+#include "py_defines.h"
 #define PY_ARRAY_UNIQUE_SYMBOL UJSON_NUMPY
 #define NO_IMPORT_ARRAY
-#define PY_SSIZE_T_CLEAN
-#include <Python.h>
-#include <numpy/arrayobject.h>
-#include <ultrajson.h>
+#include <numpy/arrayobject.h>  // NOLINT(build/include_order)
+#include <ultrajson.h>          // NOLINT(build/include_order)
 
 #define PRINTMARK()
 
@@ -468,7 +470,7 @@ JSOBJ Object_newArray(void *prv, void *decoder) { return PyList_New(0); }
 JSOBJ Object_endArray(void *prv, JSOBJ obj) { return obj; }
 
 JSOBJ Object_newInteger(void *prv, JSINT32 value) {
-    return PyLong_FromLong((long)value);
+    return PyInt_FromLong((long)value);
 }
 
 JSOBJ Object_newLong(void *prv, JSINT64 value) {
@@ -528,7 +530,7 @@ PyObject *JSONToObj(PyObject *self, PyObject *args, PyObject *kwargs) {
         decoder->preciseFloat = 1;
     }
 
-    if (PyBytes_Check(arg)) {
+    if (PyString_Check(arg)) {
         sarg = arg;
     } else if (PyUnicode_Check(arg)) {
         sarg = PyUnicode_AsUTF8String(arg);
@@ -537,7 +539,7 @@ PyObject *JSONToObj(PyObject *self, PyObject *args, PyObject *kwargs) {
             return NULL;
         }
     } else {
-        PyErr_Format(PyExc_TypeError, "Expected 'str' or 'bytes'");
+        PyErr_Format(PyExc_TypeError, "Expected String or Unicode");
         return NULL;
     }
 
@@ -557,8 +559,8 @@ PyObject *JSONToObj(PyObject *self, PyObject *args, PyObject *kwargs) {
         }
     }
 
-    ret = JSON_DecodeObject(decoder, PyBytes_AS_STRING(sarg),
-                            PyBytes_GET_SIZE(sarg));
+    ret = JSON_DecodeObject(decoder, PyString_AS_STRING(sarg),
+                            PyString_GET_SIZE(sarg));
 
     if (sarg != arg) {
         Py_DECREF(sarg);
@@ -588,4 +590,49 @@ PyObject *JSONToObj(PyObject *self, PyObject *args, PyObject *kwargs) {
     }
 
     return ret;
+}
+
+PyObject *JSONFileToObj(PyObject *self, PyObject *args, PyObject *kwargs) {
+    PyObject *read;
+    PyObject *string;
+    PyObject *result;
+    PyObject *file = NULL;
+    PyObject *argtuple;
+
+    if (!PyArg_ParseTuple(args, "O", &file)) {
+        return NULL;
+    }
+
+    if (!PyObject_HasAttrString(file, "read")) {
+        PyErr_Format(PyExc_TypeError, "expected file");
+        return NULL;
+    }
+
+    read = PyObject_GetAttrString(file, "read");
+
+    if (!PyCallable_Check(read)) {
+        Py_XDECREF(read);
+        PyErr_Format(PyExc_TypeError, "expected file");
+        return NULL;
+    }
+
+    string = PyObject_CallObject(read, NULL);
+    Py_XDECREF(read);
+
+    if (string == NULL) {
+        return NULL;
+    }
+
+    argtuple = PyTuple_Pack(1, string);
+
+    result = JSONToObj(self, argtuple, kwargs);
+
+    Py_XDECREF(argtuple);
+    Py_XDECREF(string);
+
+    if (result == NULL) {
+        return NULL;
+    }
+
+    return result;
 }

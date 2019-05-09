@@ -12,7 +12,6 @@ import os
 import re
 import subprocess
 import sys
-from typing import Callable, Dict
 
 
 def get_keywords():
@@ -47,11 +46,12 @@ class NotThisMethod(Exception):
     pass
 
 
-HANDLERS = {}  # type: Dict[str, Dict[str, Callable]]
+LONG_VERSION_PY = {}
+HANDLERS = {}
 
 
-def register_vcs_handler(vcs: str, method: str) -> Callable:  # decorator
-    def decorate(f: Callable) -> Callable:
+def register_vcs_handler(vcs, method):  # decorator
+    def decorate(f):
         if vcs not in HANDLERS:
             HANDLERS[vcs] = {}
         HANDLERS[vcs][method] = f
@@ -82,7 +82,9 @@ def run_command(commands, args, cwd=None, verbose=False, hide_stderr=False):
         if verbose:
             print("unable to find command, tried %s" % (commands,))
         return None
-    stdout = p.communicate()[0].strip().decode()
+    stdout = p.communicate()[0].strip()
+    if sys.version_info[0] >= 3:
+        stdout = stdout.decode()
     if p.returncode != 0:
         if verbose:
             print("unable to run {dispcmd} (error)".format(dispcmd=dispcmd))
@@ -234,14 +236,14 @@ def git_pieces_from_vcs(tag_prefix, root, verbose, run_command=run_command):
         # tag
         full_tag = mo.group(1)
         if not full_tag.startswith(tag_prefix):
-            fmt = ("tag '{full_tag}' doesn't start with prefix "
-                   "'{tag_prefix}'")
-            msg = fmt.format(full_tag=full_tag, tag_prefix=tag_prefix)
             if verbose:
-                print(msg)
-            pieces["error"] = msg
+                fmt = "tag '{full_tag}' doesn't start with prefix " \
+                      "'{tag_prefix}'"
+                print(fmt.format(full_tag=full_tag, tag_prefix=tag_prefix))
+            pieces["error"] = ("tag '{full_tag}' doesn't start with "
+                               "prefix '{tag_prefix}'".format(
+                                   full_tag, tag_prefix))
             return pieces
-
         pieces["closest-tag"] = full_tag[len(tag_prefix):]
 
         # distance: number of commits since tag

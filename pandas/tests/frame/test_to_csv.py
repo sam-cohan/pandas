@@ -1,25 +1,29 @@
-import csv
-from io import StringIO
-import os
+# -*- coding: utf-8 -*-
 
-import numpy as np
+from __future__ import print_function
+
+import csv
 import pytest
 
-from pandas.compat import lmap
-from pandas.errors import ParserError
+from numpy import nan
+import numpy as np
 
-import pandas as pd
-from pandas import (
-    DataFrame, Index, MultiIndex, Series, Timestamp, date_range, read_csv,
-    to_datetime)
+from pandas.compat import (lmap, range, lrange, StringIO, u)
 import pandas.core.common as com
-from pandas.tests.frame.common import TestData
-import pandas.util.testing as tm
-from pandas.util.testing import (
-    assert_almost_equal, assert_frame_equal, assert_series_equal, ensure_clean,
-    makeCustomDataframe as mkdf)
+from pandas.errors import ParserError
+from pandas import (DataFrame, Index, Series, MultiIndex, Timestamp,
+                    date_range, read_csv, compat, to_datetime)
+import pandas as pd
 
-from pandas.io.common import _get_handle
+from pandas.util.testing import (assert_almost_equal,
+                                 assert_series_equal,
+                                 assert_frame_equal,
+                                 ensure_clean,
+                                 makeCustomDataframe as mkdf)
+import pandas.util.testing as tm
+
+from pandas.tests.frame.common import TestData
+
 
 MIXED_FLOAT_DTYPES = ['float16', 'float32', 'float64']
 MIXED_INT_DTYPES = ['uint8', 'uint16', 'uint32', 'uint64', 'int8', 'int16',
@@ -46,7 +50,7 @@ class TestDataFrameToCSV(TestData):
     def test_to_csv_from_csv1(self):
 
         with ensure_clean('__tmp_to_csv_from_csv1__') as path:
-            self.frame['A'][:5] = np.nan
+            self.frame['A'][:5] = nan
 
             self.frame.to_csv(path)
             self.frame.to_csv(path, columns=['A', 'B'])
@@ -69,8 +73,8 @@ class TestDataFrameToCSV(TestData):
             assert_almost_equal(self.tsframe.values, recons.values)
 
             # corner case
-            dm = DataFrame({'s1': Series(range(3), index=np.arange(3)),
-                            's2': Series(range(2), index=np.arange(2))})
+            dm = DataFrame({'s1': Series(lrange(3), lrange(3)),
+                            's2': Series(lrange(2), lrange(2))})
             dm.to_csv(path)
 
             recons = self.read_csv(path)
@@ -106,9 +110,8 @@ class TestDataFrameToCSV(TestData):
             xp.columns = col_aliases
             assert_frame_equal(xp, rs)
 
-            msg = "Writing 4 cols but got 2 aliases"
-            with pytest.raises(ValueError, match=msg):
-                self.frame2.to_csv(path, header=['AA', 'X'])
+            pytest.raises(ValueError, self.frame2.to_csv, path,
+                          header=['AA', 'X'])
 
     def test_to_csv_from_csv3(self):
 
@@ -150,7 +153,7 @@ class TestDataFrameToCSV(TestData):
             self.tzframe.to_csv(path)
             result = pd.read_csv(path, index_col=0, parse_dates=['A'])
 
-            converter = lambda c: to_datetime(result[c]).dt.tz_convert(
+            converter = lambda c: to_datetime(result[c]).dt.tz_localize(
                 'UTC').dt.tz_convert(self.tzframe[c].dt.tz)
             result['B'] = converter('B')
             result['C'] = converter('C')
@@ -259,8 +262,8 @@ class TestDataFrameToCSV(TestData):
             kwargs = dict(parse_dates=False)
             if cnlvl:
                 if rnlvl is not None:
-                    kwargs['index_col'] = list(range(rnlvl))
-                kwargs['header'] = list(range(cnlvl))
+                    kwargs['index_col'] = lrange(rnlvl)
+                kwargs['header'] = lrange(cnlvl)
 
                 with ensure_clean('__tmp_to_csv_moar__') as path:
                     df.to_csv(path, encoding='utf8',
@@ -274,7 +277,7 @@ class TestDataFrameToCSV(TestData):
                     recons = self.read_csv(path, **kwargs)
 
             def _to_uni(x):
-                if not isinstance(x, str):
+                if not isinstance(x, compat.text_type):
                     return x.decode('utf8')
                 return x
             if dupe_col:
@@ -392,7 +395,7 @@ class TestDataFrameToCSV(TestData):
             df.columns = cols
             _do_test(df, dupe_col=True)
 
-        _do_test(DataFrame(index=np.arange(10)))
+        _do_test(DataFrame(index=lrange(10)))
         _do_test(mkdf(chunksize // 2 + 1, 2, r_idx_nlevels=2), rnlvl=2)
         for ncols in [2, 3, 4]:
             base = int(chunksize // ncols)
@@ -616,12 +619,12 @@ class TestDataFrameToCSV(TestData):
 
             for i in [6, 7]:
                 msg = 'len of {i}, but only 5 lines in file'.format(i=i)
-                with pytest.raises(ParserError, match=msg):
-                    read_csv(path, header=list(range(i)), index_col=0)
+                with tm.assert_raises_regex(ParserError, msg):
+                    read_csv(path, header=lrange(i), index_col=0)
 
             # write with cols
-            msg = 'cannot specify cols with a MultiIndex'
-            with pytest.raises(TypeError, match=msg):
+            with tm.assert_raises_regex(TypeError, 'cannot specify cols '
+                                        'with a MultiIndex'):
                 df.to_csv(path, columns=['foo', 'bar'])
 
         with ensure_clean('__tmp_to_csv_multiindex__') as path:
@@ -695,9 +698,8 @@ class TestDataFrameToCSV(TestData):
 
     def test_to_csv_dups_cols(self):
 
-        df = DataFrame(np.random.randn(1000, 30),
-                       columns=list(range(15)) + list(range(15)),
-                       dtype='float64')
+        df = DataFrame(np.random.randn(1000, 30), columns=lrange(
+            15) + lrange(15), dtype='float64')
 
         with ensure_clean() as filename:
             df.to_csv(filename)  # single dtype, fine
@@ -707,10 +709,10 @@ class TestDataFrameToCSV(TestData):
 
         df_float = DataFrame(np.random.randn(1000, 3), dtype='float64')
         df_int = DataFrame(np.random.randn(1000, 3), dtype='int64')
-        df_bool = DataFrame(True, index=df_float.index, columns=range(3))
-        df_object = DataFrame('foo', index=df_float.index, columns=range(3))
+        df_bool = DataFrame(True, index=df_float.index, columns=lrange(3))
+        df_object = DataFrame('foo', index=df_float.index, columns=lrange(3))
         df_dt = DataFrame(Timestamp('20010101'),
-                          index=df_float.index, columns=range(3))
+                          index=df_float.index, columns=lrange(3))
         df = pd.concat([df_float, df_int, df_bool, df_object,
                         df_dt], axis=1, ignore_index=True)
 
@@ -747,7 +749,7 @@ class TestDataFrameToCSV(TestData):
 
     def test_to_csv_chunking(self):
 
-        aa = DataFrame({'A': range(100000)})
+        aa = DataFrame({'A': lrange(100000)})
         aa['B'] = aa.A + 1.0
         aa['C'] = aa.A + 2.0
         aa['D'] = aa.A + 3.0
@@ -781,7 +783,7 @@ class TestDataFrameToCSV(TestData):
 
     def test_to_csv_unicode(self):
 
-        df = DataFrame({'c/\u03c3': [1, 2, 3]})
+        df = DataFrame({u('c/\u03c3'): [1, 2, 3]})
         with ensure_clean() as path:
 
             df.to_csv(path, encoding='UTF-8')
@@ -795,10 +797,10 @@ class TestDataFrameToCSV(TestData):
     def test_to_csv_unicode_index_col(self):
         buf = StringIO('')
         df = DataFrame(
-            [["\u05d0", "d2", "d3", "d4"], ["a1", "a2", "a3", "a4"]],
-            columns=["\u05d0",
-                     "\u05d1", "\u05d2", "\u05d3"],
-            index=["\u05d0", "\u05d1"])
+            [[u("\u05d0"), "d2", "d3", "d4"], ["a1", "a2", "a3", "a4"]],
+            columns=[u("\u05d0"),
+                     u("\u05d1"), u("\u05d2"), u("\u05d3")],
+            index=[u("\u05d0"), u("\u05d1")])
 
         df.to_csv(buf, encoding='UTF-8')
         buf.seek(0)
@@ -838,11 +840,11 @@ class TestDataFrameToCSV(TestData):
                   encoding='utf-8')
 
         result = buf.getvalue()
-        expected_rows = ['"A","B"',
-                         '1,"foo"',
-                         '2,"bar"',
-                         '3,"baz"']
-        expected = tm.convert_rows_list_to_csv_str(expected_rows)
+        expected = ('"A","B"\n'
+                    '1,"foo"\n'
+                    '2,"bar"\n'
+                    '3,"baz"\n')
+
         assert result == expected
 
     def test_to_csv_quote_none(self):
@@ -852,12 +854,8 @@ class TestDataFrameToCSV(TestData):
             buf = StringIO()
             df.to_csv(buf, quoting=csv.QUOTE_NONE,
                       encoding=encoding, index=False)
-
             result = buf.getvalue()
-            expected_rows = ['A',
-                             'hello',
-                             '{"hello"}']
-            expected = tm.convert_rows_list_to_csv_str(expected_rows)
+            expected = 'A\nhello\n{"hello"}\n'
             assert result == expected
 
     def test_to_csv_index_no_leading_comma(self):
@@ -866,68 +864,50 @@ class TestDataFrameToCSV(TestData):
 
         buf = StringIO()
         df.to_csv(buf, index_label=False)
-
-        expected_rows = ['A,B',
-                         'one,1,4',
-                         'two,2,5',
-                         'three,3,6']
-        expected = tm.convert_rows_list_to_csv_str(expected_rows)
+        expected = ('A,B\n'
+                    'one,1,4\n'
+                    'two,2,5\n'
+                    'three,3,6\n')
         assert buf.getvalue() == expected
 
     def test_to_csv_line_terminators(self):
-        # see gh-20353
         df = DataFrame({'A': [1, 2, 3], 'B': [4, 5, 6]},
                        index=['one', 'two', 'three'])
 
-        with ensure_clean() as path:
-            # case 1: CRLF as line terminator
-            df.to_csv(path, line_terminator='\r\n')
-            expected = b',A,B\r\none,1,4\r\ntwo,2,5\r\nthree,3,6\r\n'
+        buf = StringIO()
+        df.to_csv(buf, line_terminator='\r\n')
+        expected = (',A,B\r\n'
+                    'one,1,4\r\n'
+                    'two,2,5\r\n'
+                    'three,3,6\r\n')
+        assert buf.getvalue() == expected
 
-            with open(path, mode='rb') as f:
-                assert f.read() == expected
-
-        with ensure_clean() as path:
-            # case 2: LF as line terminator
-            df.to_csv(path, line_terminator='\n')
-            expected = b',A,B\none,1,4\ntwo,2,5\nthree,3,6\n'
-
-            with open(path, mode='rb') as f:
-                assert f.read() == expected
-
-        with ensure_clean() as path:
-            # case 3: The default line terminator(=os.linesep)(gh-21406)
-            df.to_csv(path)
-            os_linesep = os.linesep.encode('utf-8')
-            expected = (b',A,B' + os_linesep + b'one,1,4' + os_linesep +
-                        b'two,2,5' + os_linesep + b'three,3,6' + os_linesep)
-
-            with open(path, mode='rb') as f:
-                assert f.read() == expected
+        buf = StringIO()
+        df.to_csv(buf)  # The default line terminator remains \n
+        expected = (',A,B\n'
+                    'one,1,4\n'
+                    'two,2,5\n'
+                    'three,3,6\n')
+        assert buf.getvalue() == expected
 
     def test_to_csv_from_csv_categorical(self):
 
-        # CSV with categoricals should result in the same output
-        # as when one would add a "normal" Series/DataFrame.
-        s = Series(pd.Categorical(["a", "b", "b", "a", "a", "c", "c", "c"]))
-        s2 = Series(["a", "b", "b", "a", "a", "c", "c", "c"])
+        # CSV with categoricals should result in the same output as when one
+        # would add a "normal" Series/DataFrame.
+        s = Series(pd.Categorical(['a', 'b', 'b', 'a', 'a', 'c', 'c', 'c']))
+        s2 = Series(['a', 'b', 'b', 'a', 'a', 'c', 'c', 'c'])
         res = StringIO()
-
-        s.to_csv(res, header=False)
+        s.to_csv(res)
         exp = StringIO()
-
-        s2.to_csv(exp, header=False)
+        s2.to_csv(exp)
         assert res.getvalue() == exp.getvalue()
 
         df = DataFrame({"s": s})
         df2 = DataFrame({"s": s2})
-
         res = StringIO()
         df.to_csv(res)
-
         exp = StringIO()
         df2.to_csv(exp)
-
         assert res.getvalue() == exp.getvalue()
 
     def test_to_csv_path_is_none(self):
@@ -939,46 +919,42 @@ class TestDataFrameToCSV(TestData):
         recons = pd.read_csv(StringIO(csv_str), index_col=0)
         assert_frame_equal(self.frame, recons)
 
-    @pytest.mark.parametrize('df,encoding', [
-        (DataFrame([[0.123456, 0.234567, 0.567567],
-                    [12.32112, 123123.2, 321321.2]],
-                   index=['A', 'B'], columns=['X', 'Y', 'Z']), None),
-        # GH 21241, 21118
-        (DataFrame([['abc', 'def', 'ghi']], columns=['X', 'Y', 'Z']), 'ascii'),
-        (DataFrame(5 * [[123, "你好", "世界"]],
-                   columns=['X', 'Y', 'Z']), 'gb2312'),
-        (DataFrame(5 * [[123, "Γειά σου", "Κόσμε"]],
-                   columns=['X', 'Y', 'Z']), 'cp737')
-    ])
-    def test_to_csv_compression(self, df, encoding, compression):
+    def test_to_csv_compression(self, compression_no_zip):
+
+        df = DataFrame([[0.123456, 0.234567, 0.567567],
+                        [12.32112, 123123.2, 321321.2]],
+                       index=['A', 'B'], columns=['X', 'Y', 'Z'])
 
         with ensure_clean() as filename:
 
-            df.to_csv(filename, compression=compression, encoding=encoding)
-            # test the round trip - to_csv -> read_csv
-            result = read_csv(filename, compression=compression,
-                              index_col=0, encoding=encoding)
-            assert_frame_equal(df, result)
+            df.to_csv(filename, compression=compression_no_zip)
 
-            # test the round trip using file handle - to_csv -> read_csv
-            f, _handles = _get_handle(filename, 'w', compression=compression,
-                                      encoding=encoding)
-            with f:
-                df.to_csv(f, encoding=encoding)
-            result = pd.read_csv(filename, compression=compression,
-                                 encoding=encoding, index_col=0, squeeze=True)
-            assert_frame_equal(df, result)
+            # test the round trip - to_csv -> read_csv
+            rs = read_csv(filename, compression=compression_no_zip,
+                          index_col=0)
+            assert_frame_equal(df, rs)
 
             # explicitly make sure file is compressed
-            with tm.decompress_file(filename, compression) as fh:
-                text = fh.read().decode(encoding or 'utf8')
+            with tm.decompress_file(filename, compression_no_zip) as fh:
+                text = fh.read().decode('utf8')
                 for col in df.columns:
                     assert col in text
 
-            with tm.decompress_file(filename, compression) as fh:
-                assert_frame_equal(df, read_csv(fh,
-                                                index_col=0,
-                                                encoding=encoding))
+            with tm.decompress_file(filename, compression_no_zip) as fh:
+                assert_frame_equal(df, read_csv(fh, index_col=0))
+
+    def test_to_csv_compression_value_error(self):
+        # GH7615
+        # use the compression kw in to_csv
+        df = DataFrame([[0.123456, 0.234567, 0.567567],
+                        [12.32112, 123123.2, 321321.2]],
+                       index=['A', 'B'], columns=['X', 'Y', 'Z'])
+
+        with ensure_clean() as filename:
+            # zip compression is not supported and should raise ValueError
+            import zipfile
+            pytest.raises(zipfile.BadZipfile, df.to_csv,
+                          filename, compression="zip")
 
     def test_to_csv_date_format(self):
         with ensure_clean('__tmp_to_csv_date_format__') as path:
@@ -1046,11 +1022,12 @@ class TestDataFrameToCSV(TestData):
                 time_range = np.array(range(len(i)), dtype='int64')
                 df = DataFrame({'A': time_range}, index=i)
                 df.to_csv(path, index=True)
+
                 # we have to reconvert the index as we
                 # don't parse the tz's
                 result = read_csv(path, index_col=0)
-                result.index = to_datetime(result.index, utc=True).tz_convert(
-                    'Europe/London')
+                result.index = to_datetime(result.index).tz_localize(
+                    'UTC').tz_convert('Europe/London')
                 assert_frame_equal(result, df)
 
         # GH11619
@@ -1061,9 +1038,9 @@ class TestDataFrameToCSV(TestData):
         with ensure_clean('csv_date_format_with_dst') as path:
             df.to_csv(path, index=True)
             result = read_csv(path, index_col=0)
-            result.index = to_datetime(result.index, utc=True).tz_convert(
-                'Europe/Paris')
-            result['idx'] = to_datetime(result['idx'], utc=True).astype(
+            result.index = to_datetime(result.index).tz_localize(
+                'UTC').tz_convert('Europe/Paris')
+            result['idx'] = to_datetime(result['idx']).astype(
                 'datetime64[ns, Europe/Paris]')
             assert_frame_equal(result, df)
 
@@ -1077,78 +1054,73 @@ class TestDataFrameToCSV(TestData):
 
     def test_to_csv_quoting(self):
         df = DataFrame({
-            'c_bool': [True, False],
-            'c_float': [1.0, 3.2],
-            'c_int': [42, np.nan],
             'c_string': ['a', 'b,c'],
+            'c_int': [42, np.nan],
+            'c_float': [1.0, 3.2],
+            'c_bool': [True, False],
         })
 
-        expected_rows = [',c_bool,c_float,c_int,c_string',
-                         '0,True,1.0,42.0,a',
-                         '1,False,3.2,,"b,c"']
-        expected = tm.convert_rows_list_to_csv_str(expected_rows)
-
+        expected = """\
+,c_bool,c_float,c_int,c_string
+0,True,1.0,42.0,a
+1,False,3.2,,"b,c"
+"""
         result = df.to_csv()
         assert result == expected
 
         result = df.to_csv(quoting=None)
         assert result == expected
 
-        expected_rows = [',c_bool,c_float,c_int,c_string',
-                         '0,True,1.0,42.0,a',
-                         '1,False,3.2,,"b,c"']
-        expected = tm.convert_rows_list_to_csv_str(expected_rows)
-
         result = df.to_csv(quoting=csv.QUOTE_MINIMAL)
         assert result == expected
 
-        expected_rows = ['"","c_bool","c_float","c_int","c_string"',
-                         '"0","True","1.0","42.0","a"',
-                         '"1","False","3.2","","b,c"']
-        expected = tm.convert_rows_list_to_csv_str(expected_rows)
-
+        expected = """\
+"","c_bool","c_float","c_int","c_string"
+"0","True","1.0","42.0","a"
+"1","False","3.2","","b,c"
+"""
         result = df.to_csv(quoting=csv.QUOTE_ALL)
         assert result == expected
 
         # see gh-12922, gh-13259: make sure changes to
         # the formatters do not break this behaviour
-        expected_rows = ['"","c_bool","c_float","c_int","c_string"',
-                         '0,True,1.0,42.0,"a"',
-                         '1,False,3.2,"","b,c"']
-        expected = tm.convert_rows_list_to_csv_str(expected_rows)
+        expected = """\
+"","c_bool","c_float","c_int","c_string"
+0,True,1.0,42.0,"a"
+1,False,3.2,"","b,c"
+"""
         result = df.to_csv(quoting=csv.QUOTE_NONNUMERIC)
         assert result == expected
 
         msg = "need to escape, but no escapechar set"
-        with pytest.raises(csv.Error, match=msg):
-            df.to_csv(quoting=csv.QUOTE_NONE)
+        tm.assert_raises_regex(csv.Error, msg, df.to_csv,
+                               quoting=csv.QUOTE_NONE)
+        tm.assert_raises_regex(csv.Error, msg, df.to_csv,
+                               quoting=csv.QUOTE_NONE,
+                               escapechar=None)
 
-        with pytest.raises(csv.Error, match=msg):
-            df.to_csv(quoting=csv.QUOTE_NONE, escapechar=None)
-
-        expected_rows = [',c_bool,c_float,c_int,c_string',
-                         '0,True,1.0,42.0,a',
-                         '1,False,3.2,,b!,c']
-        expected = tm.convert_rows_list_to_csv_str(expected_rows)
+        expected = """\
+,c_bool,c_float,c_int,c_string
+0,True,1.0,42.0,a
+1,False,3.2,,b!,c
+"""
         result = df.to_csv(quoting=csv.QUOTE_NONE,
                            escapechar='!')
         assert result == expected
 
-        expected_rows = [',c_bool,c_ffloat,c_int,c_string',
-                         '0,True,1.0,42.0,a',
-                         '1,False,3.2,,bf,c']
-        expected = tm.convert_rows_list_to_csv_str(expected_rows)
+        expected = """\
+,c_bool,c_ffloat,c_int,c_string
+0,True,1.0,42.0,a
+1,False,3.2,,bf,c
+"""
         result = df.to_csv(quoting=csv.QUOTE_NONE,
                            escapechar='f')
         assert result == expected
 
         # see gh-3503: quoting Windows line terminators
         # presents with encoding?
-        text_rows = ['a,b,c',
-                     '1,"test \r\n",3']
-        text = tm.convert_rows_list_to_csv_str(text_rows)
+        text = 'a,b,c\n1,"test \r\n",3\n'
         df = pd.read_csv(StringIO(text))
-
         buf = StringIO()
         df.to_csv(buf, encoding='utf-8', index=False)
         assert buf.getvalue() == text
@@ -1157,11 +1129,7 @@ class TestDataFrameToCSV(TestData):
         # with multi-indexes
         df = pd.DataFrame({'a': [1, 2], 'b': [3, 4], 'c': [5, 6]})
         df = df.set_index(['a', 'b'])
-
-        expected_rows = ['"a","b","c"',
-                         '"1","3","5"',
-                         '"2","4","6"']
-        expected = tm.convert_rows_list_to_csv_str(expected_rows)
+        expected = '"a","b","c"\n"1","3","5"\n"2","4","6"\n'
         assert df.to_csv(quoting=csv.QUOTE_ALL) == expected
 
     def test_period_index_date_overflow(self):
@@ -1173,21 +1141,13 @@ class TestDataFrameToCSV(TestData):
         df = pd.DataFrame([4, 5, 6], index=index)
         result = df.to_csv()
 
-        expected_rows = [',0',
-                         '1990-01-01,4',
-                         '2000-01-01,5',
-                         '3005-01-01,6']
-        expected = tm.convert_rows_list_to_csv_str(expected_rows)
+        expected = ',0\n1990-01-01,4\n2000-01-01,5\n3005-01-01,6\n'
         assert result == expected
 
         date_format = "%m-%d-%Y"
         result = df.to_csv(date_format=date_format)
 
-        expected_rows = [',0',
-                         '01-01-1990,4',
-                         '01-01-2000,5',
-                         '01-01-3005,6']
-        expected = tm.convert_rows_list_to_csv_str(expected_rows)
+        expected = ',0\n01-01-1990,4\n01-01-2000,5\n01-01-3005,6\n'
         assert result == expected
 
         # Overflow with pd.NaT
@@ -1197,11 +1157,7 @@ class TestDataFrameToCSV(TestData):
         df = pd.DataFrame([4, 5, 6], index=index)
         result = df.to_csv()
 
-        expected_rows = [',0',
-                         '1990-01-01,4',
-                         ',5',
-                         '3005-01-01,6']
-        expected = tm.convert_rows_list_to_csv_str(expected_rows)
+        expected = ',0\n1990-01-01,4\n,5\n3005-01-01,6\n'
         assert result == expected
 
     def test_multi_index_header(self):
@@ -1214,20 +1170,5 @@ class TestDataFrameToCSV(TestData):
         header = ["a", "b", "c", "d"]
         result = df.to_csv(header=header)
 
-        expected_rows = [',a,b,c,d',
-                         '0,1,2,3,4',
-                         '1,5,6,7,8']
-        expected = tm.convert_rows_list_to_csv_str(expected_rows)
-        assert result == expected
-
-    def test_gz_lineend(self):
-        # GH 25311
-        df = pd.DataFrame({'a': [1, 2]})
-        expected_rows = ['a', '1', '2']
-        expected = tm.convert_rows_list_to_csv_str(expected_rows)
-        with ensure_clean('__test_gz_lineend.csv.gz') as path:
-            df.to_csv(path, index=False)
-            with tm.decompress_file(path, compression='gzip') as f:
-                result = f.read().decode('utf-8')
-
+        expected = ",a,b,c,d\n0,1,2,3,4\n1,5,6,7,8\n"
         assert result == expected

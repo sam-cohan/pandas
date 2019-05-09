@@ -12,7 +12,7 @@ The Versioneer
 * Compatible With: python2.6, 2.7, 3.2, 3.3, 3.4, and pypy
 * [![Latest Version]
 (https://pypip.in/version/versioneer/badge.svg?style=flat)
-](https://pypi.org/project/versioneer/)
+](https://pypi.python.org/pypi/versioneer/)
 * [![Build Status]
 (https://travis-ci.org/warner/python-versioneer.png?branch=master)
 ](https://travis-ci.org/warner/python-versioneer)
@@ -339,6 +339,7 @@ domain.
 
 """
 
+from __future__ import print_function
 try:
     import configparser
 except ImportError:
@@ -351,7 +352,7 @@ import subprocess
 import sys
 
 
-class VersioneerConfig(object):
+class VersioneerConfig:
     pass
 
 
@@ -463,9 +464,7 @@ def run_command(commands, args, cwd=None, verbose=False, hide_stderr=False):
             print("unable to run %s (error)" % dispcmd)
         return None
     return stdout
-
-
-LONG_VERSION_PY['git'] = r'''
+LONG_VERSION_PY['git'] = '''
 # This file helps to compute a version number in source trees obtained from
 # git-archive tarball (such as those provided by githubs download-from-tag
 # feature). Distribution tarballs (built by setup.py sdist) and build

@@ -1,12 +1,13 @@
+# -*- coding: utf-8 -*-
+
 import itertools
-
-import numpy as np
 import pytest
-
-import pandas.compat as compat
+import numpy as np
 
 import pandas as pd
 import pandas.util.testing as tm
+import pandas.compat as compat
+
 
 ###############################################################
 # Index / Series common tests which may trigger dtype coercions
@@ -29,12 +30,12 @@ def check_comprehensiveness(request):
     for combo in combos:
         if not has_test(combo):
             msg = 'test method is not defined: {0}, {1}'
-            raise AssertionError(msg.format(cls.__name__, combo))
+            raise AssertionError(msg.format(type(cls), combo))
 
     yield
 
 
-class CoercionBase:
+class CoercionBase(object):
 
     klasses = ['index', 'series']
     dtypes = ['object', 'int64', 'float64', 'complex128', 'bool',
@@ -372,14 +373,14 @@ class TestInsertIndexCoercion(CoercionBase):
 
         msg = "Passed item and index have different timezone"
         if fill_val.tz:
-            with pytest.raises(ValueError, match=msg):
+            with tm.assert_raises_regex(ValueError, msg):
                 obj.insert(1, pd.Timestamp('2012-01-01'))
 
-        with pytest.raises(ValueError, match=msg):
+        with tm.assert_raises_regex(ValueError, msg):
             obj.insert(1, pd.Timestamp('2012-01-01', tz='Asia/Tokyo'))
 
         msg = "cannot insert DatetimeIndex with incompatible label"
-        with pytest.raises(TypeError, match=msg):
+        with tm.assert_raises_regex(TypeError, msg):
             obj.insert(1, 1)
 
         pytest.xfail("ToDo: must coerce to object")
@@ -395,12 +396,12 @@ class TestInsertIndexCoercion(CoercionBase):
 
         # ToDo: must coerce to object
         msg = "cannot insert TimedeltaIndex with incompatible label"
-        with pytest.raises(TypeError, match=msg):
+        with tm.assert_raises_regex(TypeError, msg):
             obj.insert(1, pd.Timestamp('2012-01-01'))
 
         # ToDo: must coerce to object
         msg = "cannot insert TimedeltaIndex with incompatible label"
-        with pytest.raises(TypeError, match=msg):
+        with tm.assert_raises_regex(TypeError, msg):
             obj.insert(1, 1)
 
     @pytest.mark.parametrize("insert, coerced_val, coerced_dtype", [
@@ -579,19 +580,22 @@ class TestWhereCoercion(CoercionBase):
         values = pd.Series(pd.date_range(fill_val, periods=4))
         if fill_val.tz:
             exp = pd.Series([pd.Timestamp('2011-01-01'),
-                             pd.Timestamp('2012-01-02 00:00', tz='US/Eastern'),
+                             pd.Timestamp('2012-01-02 05:00'),
                              pd.Timestamp('2011-01-03'),
-                             pd.Timestamp('2012-01-04 00:00',
-                                          tz='US/Eastern')])
-            self._assert_where_conversion(obj, cond, values, exp, exp_dtype)
+                             pd.Timestamp('2012-01-04 05:00')])
+            self._assert_where_conversion(obj, cond, values, exp,
+                                          'datetime64[ns]')
+            pytest.xfail("ToDo: do not coerce to UTC, must be object")
 
         exp = pd.Series([pd.Timestamp('2011-01-01'), values[1],
                          pd.Timestamp('2011-01-03'), values[3]])
         self._assert_where_conversion(obj, cond, values, exp, exp_dtype)
 
-    def test_where_index_datetime(self):
-        fill_val = pd.Timestamp('2012-01-01')
-        exp_dtype = 'datetime64[ns]'
+    @pytest.mark.parametrize("fill_val,exp_dtype", [
+        (pd.Timestamp('2012-01-01'), 'datetime64[ns]'),
+        (pd.Timestamp('2012-01-01', tz='US/Eastern'), np.object)],
+        ids=['datetime64', 'datetime64tz'])
+    def test_where_index_datetime(self, fill_val, exp_dtype):
         obj = pd.Index([pd.Timestamp('2011-01-01'),
                         pd.Timestamp('2011-01-02'),
                         pd.Timestamp('2011-01-03'),
@@ -601,7 +605,7 @@ class TestWhereCoercion(CoercionBase):
 
         msg = ("Index\\(\\.\\.\\.\\) must be called with a collection "
                "of some kind")
-        with pytest.raises(TypeError, match=msg):
+        with tm.assert_raises_regex(TypeError, msg):
             obj.where(cond, fill_val)
 
         values = pd.Index(pd.date_range(fill_val, periods=4))
@@ -610,33 +614,13 @@ class TestWhereCoercion(CoercionBase):
                         pd.Timestamp('2011-01-03'),
                         pd.Timestamp('2012-01-04')])
 
+        if fill_val.tz:
+            self._assert_where_conversion(obj, cond, values, exp,
+                                          'datetime64[ns]')
+            pytest.xfail("ToDo: do not ignore timezone, must be object")
         self._assert_where_conversion(obj, cond, values, exp, exp_dtype)
-
-    @pytest.mark.xfail(
-        reason="GH 22839: do not ignore timezone, must be object")
-    def test_where_index_datetimetz(self):
-        fill_val = pd.Timestamp('2012-01-01', tz='US/Eastern')
-        exp_dtype = np.object
-        obj = pd.Index([pd.Timestamp('2011-01-01'),
-                        pd.Timestamp('2011-01-02'),
-                        pd.Timestamp('2011-01-03'),
-                        pd.Timestamp('2011-01-04')])
-        assert obj.dtype == 'datetime64[ns]'
-        cond = pd.Index([True, False, True, False])
-
-        msg = ("Index\\(\\.\\.\\.\\) must be called with a collection "
-               "of some kind")
-        with pytest.raises(TypeError, match=msg):
-            obj.where(cond, fill_val)
-
-        values = pd.Index(pd.date_range(fill_val, periods=4))
-        exp = pd.Index([pd.Timestamp('2011-01-01'),
-                        pd.Timestamp('2012-01-02', tz='US/Eastern'),
-                        pd.Timestamp('2011-01-03'),
-                        pd.Timestamp('2012-01-04', tz='US/Eastern')],
-                       dtype=exp_dtype)
-
-        self._assert_where_conversion(obj, cond, values, exp, exp_dtype)
+        pytest.xfail("datetime64 + datetime64 -> datetime64 must support"
+                     " scalar")
 
     def test_where_index_complex128(self):
         pass
@@ -826,7 +810,7 @@ class TestReplaceSeriesCoercion(CoercionBase):
         'datetime64[ns, UTC]', 'datetime64[ns, US/Eastern]', 'timedelta64[ns]']
     )
     def test_replace_series(self, how, to_key, from_key):
-        if from_key == 'bool' and how == 'series':
+        if from_key == 'bool' and how == 'series' and compat.PY3:
             # doesn't work in PY3, though ...dict_from_bool works fine
             pytest.skip("doesn't work as in PY3")
 
@@ -901,12 +885,11 @@ class TestReplaceSeriesCoercion(CoercionBase):
 
     # TODO(jreback) commented out to only have a single xfail printed
     @pytest.mark.xfail(reason="different tz, "
-                       "currently mask_missing raises SystemError",
-                       strict=False)
+                       "currently mask_missing raises SystemError")
     # @pytest.mark.parametrize('how', ['dict', 'series'])
     # @pytest.mark.parametrize('to_key', [
-    #    'datetime64[ns]', 'datetime64[ns, UTC]',
-    #    'datetime64[ns, US/Eastern]'])
+    #     'datetime64[ns]', 'datetime64[ns, UTC]',
+    #     'datetime64[ns, US/Eastern]'])
     # @pytest.mark.parametrize('from_key', [
     #    'datetime64[ns]', 'datetime64[ns, UTC]',
     #    'datetime64[ns, US/Eastern]'])

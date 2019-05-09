@@ -1,23 +1,24 @@
 """Tests for Table Schema integration."""
-from collections import OrderedDict
 import json
+from collections import OrderedDict
 
 import numpy as np
+import pandas as pd
 import pytest
 
-from pandas.core.dtypes.dtypes import (
-    CategoricalDtype, DatetimeTZDtype, PeriodDtype)
-
-import pandas as pd
 from pandas import DataFrame
+from pandas.core.dtypes.dtypes import (
+    PeriodDtype, CategoricalDtype, DatetimeTZDtype)
+from pandas.io.json.table_schema import (
+    as_json_table_type,
+    build_table_schema,
+    convert_pandas_type_to_json_field,
+    convert_json_field_to_pandas_type,
+    set_default_names)
 import pandas.util.testing as tm
 
-from pandas.io.json.table_schema import (
-    as_json_table_type, build_table_schema, convert_json_field_to_pandas_type,
-    convert_pandas_type_to_json_field, set_default_names)
 
-
-class TestBuildSchema:
+class TestBuildSchema(object):
 
     def setup_method(self, method):
         self.df = DataFrame(
@@ -85,7 +86,7 @@ class TestBuildSchema:
         assert result == expected
 
 
-class TestTableSchemaType:
+class TestTableSchemaType(object):
 
     @pytest.mark.parametrize('int_type', [
         np.int, np.int16, np.int32, np.int64])
@@ -149,7 +150,7 @@ class TestTableSchemaType:
         assert as_json_table_type(bool_dtype) == 'boolean'
 
     @pytest.mark.parametrize('date_dtype', [
-        np.datetime64, np.dtype("<M8[ns]"), PeriodDtype('D'),
+        np.datetime64, np.dtype("<M8[ns]"), PeriodDtype(),
         DatetimeTZDtype('ns', 'US/Central')])
     def test_as_json_table_type_date_dtypes(self, date_dtype):
         # TODO: datedate.date? datetime.time?
@@ -172,7 +173,7 @@ class TestTableSchemaType:
         assert as_json_table_type(CategoricalDtype()) == 'any'
 
 
-class TestTableOrient:
+class TestTableOrient(object):
 
     def setup_method(self, method):
         self.df = DataFrame(
@@ -408,8 +409,8 @@ class TestTableOrient:
     @pytest.mark.parametrize("inp", ["geopoint", "geojson", "fake_type"])
     def test_convert_json_field_to_pandas_type_raises(self, inp):
         field = {'type': inp}
-        with pytest.raises(ValueError, match=("Unsupported or invalid field "
-                                              "type: {}".format(inp))):
+        with tm.assert_raises_regex(ValueError, "Unsupported or invalid field "
+                                    "type: {}".format(inp)):
             convert_json_field_to_pandas_type(field)
 
     def test_categorical(self):
@@ -459,7 +460,7 @@ class TestTableOrient:
     ])
     def test_warns_non_roundtrippable_names(self, idx):
         # GH 19130
-        df = pd.DataFrame(index=idx)
+        df = pd.DataFrame([[]], index=idx)
         df.index.name = 'index'
         with tm.assert_produces_warning():
             set_default_names(df)
@@ -479,7 +480,7 @@ class TestTableOrient:
             ['a'], [1]], names=["A", "a"]))
     ])
     def test_overlapping_names(self, case):
-        with pytest.raises(ValueError, match='Overlapping'):
+        with tm.assert_raises_regex(ValueError, 'Overlapping'):
             case.to_json(orient='table')
 
     def test_mi_falsey_name(self):
@@ -491,23 +492,19 @@ class TestTableOrient:
         assert result == ['level_0', 'level_1', 0, 1, 2, 3]
 
 
-class TestTableOrientReader:
+class TestTableOrientReader(object):
 
     @pytest.mark.parametrize("index_nm", [
-        None,
-        "idx",
-        pytest.param("index",
-                     marks=pytest.mark.xfail),
+        None, "idx", pytest.param("index", marks=pytest.mark.xfail),
         'level_0'])
     @pytest.mark.parametrize("vals", [
         {'ints': [1, 2, 3, 4]},
         {'objects': ['a', 'b', 'c', 'd']},
-        {'objects': ['1', '2', '3', '4']},
         {'date_ranges': pd.date_range('2016-01-01', freq='d', periods=4)},
         {'categoricals': pd.Series(pd.Categorical(['a', 'b', 'c', 'c']))},
         {'ordered_cats': pd.Series(pd.Categorical(['a', 'b', 'c', 'c'],
                                                   ordered=True))},
-        {'floats': [1., 2., 3., 4.]},
+        pytest.param({'floats': [1., 2., 3., 4.]}, marks=pytest.mark.xfail),
         {'floats': [1.1, 2.2, 3.3, 4.4]},
         {'bools': [True, False, False, True]}])
     def test_read_json_table_orient(self, index_nm, vals, recwarn):
@@ -525,7 +522,7 @@ class TestTableOrientReader:
     def test_read_json_table_orient_raises(self, index_nm, vals, recwarn):
         df = DataFrame(vals, index=pd.Index(range(4), name=index_nm))
         out = df.to_json(orient="table")
-        with pytest.raises(NotImplementedError, match='can not yet read '):
+        with tm.assert_raises_regex(NotImplementedError, 'can not yet read '):
             pd.read_json(out, orient="table")
 
     def test_comprehensive(self):
@@ -563,11 +560,3 @@ class TestTableOrientReader:
         out = df.to_json(orient="table")
         result = pd.read_json(out, orient="table")
         tm.assert_frame_equal(df, result)
-
-    def test_empty_frame_roundtrip(self):
-        # GH 21287
-        df = pd.DataFrame(columns=['a', 'b', 'c'])
-        expected = df.copy()
-        out = df.to_json(orient='table')
-        result = pd.read_json(out, orient='table')
-        tm.assert_frame_equal(expected, result)

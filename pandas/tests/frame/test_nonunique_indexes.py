@@ -1,11 +1,19 @@
-import numpy as np
-import pytest
+# -*- coding: utf-8 -*-
 
+from __future__ import print_function
+
+import pytest
+import numpy as np
+
+from pandas.compat import lrange, u
+from pandas import DataFrame, Series, MultiIndex, date_range
 import pandas as pd
-from pandas import DataFrame, MultiIndex, Series, date_range
-from pandas.tests.frame.common import TestData
+
+from pandas.util.testing import assert_series_equal, assert_frame_equal
+
 import pandas.util.testing as tm
-from pandas.util.testing import assert_frame_equal, assert_series_equal
+
+from pandas.tests.frame.common import TestData
 
 
 class TestDataFrameNonuniqueIndexes(TestData):
@@ -21,7 +29,7 @@ class TestDataFrameNonuniqueIndexes(TestData):
         # assignment
         # GH 3687
         arr = np.random.randn(3, 2)
-        idx = list(range(2))
+        idx = lrange(2)
         df = DataFrame(arr, columns=['A', 'A'])
         df.columns = idx
         expected = DataFrame(arr, columns=idx)
@@ -43,7 +51,7 @@ class TestDataFrameNonuniqueIndexes(TestData):
                               [2, 1, 3, 5, 'bah']],
                              columns=['foo', 'bar', 'foo', 'hello', 'string'])
         check(df, expected)
-        with pytest.raises(ValueError, match='Length of value'):
+        with tm.assert_raises_regex(ValueError, 'Length of value'):
             df.insert(0, 'AnotherColumn', range(len(df.index) - 1))
 
         # insert same dtype
@@ -93,9 +101,8 @@ class TestDataFrameNonuniqueIndexes(TestData):
         check(df, expected)
 
         # insert a dup
-        with pytest.raises(ValueError, match='cannot insert'):
-            df.insert(2, 'new_col', 4.)
-
+        tm.assert_raises_regex(ValueError, 'cannot insert',
+                               df.insert, 2, 'new_col', 4.)
         df.insert(2, 'new_col', 4., allow_duplicates=True)
         expected = DataFrame([[1, 1, 4., 5., 'bah', 3],
                               [1, 2, 4., 5., 'bah', 3],
@@ -148,15 +155,15 @@ class TestDataFrameNonuniqueIndexes(TestData):
 
         # rename, GH 4403
         df4 = DataFrame(
-            {'RT': [0.0454],
-             'TClose': [22.02],
+            {'TClose': [22.02],
+             'RT': [0.0454],
              'TExg': [0.0422]},
             index=MultiIndex.from_tuples([(600809, 20130331)],
                                          names=['STK_ID', 'RPT_Date']))
 
-        df5 = DataFrame({'RPT_Date': [20120930, 20121231, 20130331],
-                         'STK_ID': [600809] * 3,
-                         'STK_Name': ['饡驦', '饡驦', '饡驦'],
+        df5 = DataFrame({'STK_ID': [600809] * 3,
+                         'RPT_Date': [20120930, 20121231, 20130331],
+                         'STK_Name': [u('饡驦'), u('饡驦'), u('饡驦')],
                          'TClose': [38.05, 41.66, 30.01]},
                         index=MultiIndex.from_tuples(
                             [(600809, 20120930),
@@ -171,7 +178,7 @@ class TestDataFrameNonuniqueIndexes(TestData):
         result.dtypes
 
         expected = (DataFrame([[0.0454, 22.02, 0.0422, 20130331, 600809,
-                                '饡驦', 30.01]],
+                                u('饡驦'), 30.01]],
                               columns=['RT', 'TClose', 'TExg',
                                        'RPT_Date', 'STK_ID', 'STK_Name',
                                        'QT_Close'])
@@ -181,11 +188,8 @@ class TestDataFrameNonuniqueIndexes(TestData):
         # reindex is invalid!
         df = DataFrame([[1, 5, 7.], [1, 5, 7.], [1, 5, 7.]],
                        columns=['bar', 'a', 'a'])
-        msg = "cannot reindex from a duplicate axis"
-        with pytest.raises(ValueError, match=msg):
-            df.reindex(columns=['bar'])
-        with pytest.raises(ValueError, match=msg):
-            df.reindex(columns=['bar', 'foo'])
+        pytest.raises(ValueError, df.reindex, columns=['bar'])
+        pytest.raises(ValueError, df.reindex, columns=['bar', 'foo'])
 
         # drop
         df = DataFrame([[1, 5, 7.], [1, 5, 7.], [1, 5, 7.]],
@@ -303,9 +307,7 @@ class TestDataFrameNonuniqueIndexes(TestData):
         # boolean with the duplicate raises
         df = DataFrame(np.arange(12).reshape(3, 4),
                        columns=dups, dtype='float64')
-        msg = "cannot reindex from a duplicate axis"
-        with pytest.raises(ValueError, match=msg):
-            df[df.A > 6]
+        pytest.raises(ValueError, lambda: df[df.A > 6])
 
         # dup aligining operations should work
         # GH 5185
@@ -322,9 +324,7 @@ class TestDataFrameNonuniqueIndexes(TestData):
                         columns=['A', 'A'])
 
         # not-comparing like-labelled
-        msg = "Can only compare identically-labeled DataFrame objects"
-        with pytest.raises(ValueError, match=msg):
-            df1 == df2
+        pytest.raises(ValueError, lambda: df1 == df2)
 
         df1r = df1.reindex_like(df2)
         result = df1r == df2
@@ -410,12 +410,9 @@ class TestDataFrameNonuniqueIndexes(TestData):
             [[1, 2, 1., 2., 3., 'foo', 'bar']], columns=list('ABCDEFG'))
         assert_frame_equal(df, expected)
 
-        df = DataFrame([[1, 2, 'foo', 'bar']], columns=['a', 'a', 'a', 'a'])
-        df.columns = ['a', 'a.1', 'a.2', 'a.3']
-        str(df)
-        expected = DataFrame([[1, 2, 'foo', 'bar']],
-                             columns=['a', 'a.1', 'a.2', 'a.3'])
-        assert_frame_equal(df, expected)
+        # this is an error because we cannot disambiguate the dup columns
+        pytest.raises(Exception, lambda x: DataFrame(
+            [[1, 2, 'foo', 'bar']], columns=['a', 'a', 'a', 'a']))
 
         # dups across blocks
         df_float = DataFrame(np.random.randn(10, 3), dtype='float64')

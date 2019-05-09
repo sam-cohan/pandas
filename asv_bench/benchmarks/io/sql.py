@@ -5,9 +5,12 @@ import pandas.util.testing as tm
 from pandas import DataFrame, date_range, read_sql_query, read_sql_table
 from sqlalchemy import create_engine
 
+from ..pandas_vb_common import setup  # noqa
 
-class SQL:
 
+class SQL(object):
+
+    goal_time = 0.2
     params = ['sqlalchemy', 'sqlite']
     param_names = ['connection']
 
@@ -38,8 +41,9 @@ class SQL:
         read_sql_query(self.query_all, self.con)
 
 
-class WriteSQLDtypes:
+class WriteSQLDtypes(object):
 
+    goal_time = 0.2
     params = (['sqlalchemy', 'sqlite'],
               ['float', 'float_with_nan', 'string', 'bool', 'int', 'datetime'])
     param_names = ['connection', 'dtype']
@@ -71,7 +75,9 @@ class WriteSQLDtypes:
         read_sql_query(self.query_col, self.con)
 
 
-class ReadSQLTable:
+class ReadSQLTable(object):
+
+    goal_time = 0.2
 
     def setup(self):
         N = 10000
@@ -98,7 +104,9 @@ class ReadSQLTable:
                        parse_dates=['datetime_string'])
 
 
-class ReadSQLTableDtypes:
+class ReadSQLTableDtypes(object):
+
+    goal_time = 0.2
 
     params = ['float', 'float_with_nan', 'string', 'bool', 'int', 'datetime']
     param_names = ['dtype']
@@ -122,6 +130,3 @@ class ReadSQLTableDtypes:
 
     def time_read_sql_table_column(self, dtype):
         read_sql_table(self.table_name, self.con, columns=[dtype])
-
-
-from ..pandas_vb_common import setup  # noqa: F401

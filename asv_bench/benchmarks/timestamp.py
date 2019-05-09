@@ -1,12 +1,10 @@
 import datetime
 
-import dateutil
+from pandas import Timestamp
 import pytz
 
-from pandas import Timestamp
 
-
-class TimestampConstruction:
+class TimestampConstruction(object):
 
     def time_parse_iso8601_no_tz(self):
         Timestamp('2017-08-25 08:16:14')
@@ -30,9 +28,10 @@ class TimestampConstruction:
         Timestamp.fromtimestamp(1515448538)
 
 
-class TimestampProperties:
-    _tzs = [None, pytz.timezone('Europe/Amsterdam'), pytz.UTC,
-            dateutil.tz.tzutc()]
+class TimestampProperties(object):
+    goal_time = 0.2
+
+    _tzs = [None, pytz.timezone('Europe/Amsterdam')]
     _freqs = [None, 'B']
     params = [_tzs, _freqs]
     param_names = ['tz', 'freq']
@@ -47,7 +46,7 @@ class TimestampProperties:
         self.ts.dayofweek
 
     def time_weekday_name(self, tz, freq):
-        self.ts.day_name
+        self.ts.weekday_name
 
     def time_dayofyear(self, tz, freq):
         self.ts.dayofyear
@@ -77,24 +76,22 @@ class TimestampProperties:
         self.ts.is_quarter_end
 
     def time_is_year_start(self, tz, freq):
-        self.ts.is_year_start
+        self.ts.is_quarter_end
 
     def time_is_year_end(self, tz, freq):
-        self.ts.is_year_end
+        self.ts.is_quarter_end
 
     def time_is_leap_year(self, tz, freq):
-        self.ts.is_leap_year
+        self.ts.is_quarter_end
 
     def time_microsecond(self, tz, freq):
         self.ts.microsecond
 
-    def time_month_name(self, tz, freq):
-        self.ts.month_name()
 
+class TimestampOps(object):
+    goal_time = 0.2
 
-class TimestampOps:
-    params = [None, 'US/Eastern', pytz.UTC,
-              dateutil.tz.tzutc()]
+    params = [None, 'US/Eastern']
     param_names = ['tz']
 
     def setup(self, tz):
@@ -109,28 +106,10 @@ class TimestampOps:
     def time_to_pydatetime(self, tz):
         self.ts.to_pydatetime()
 
-    def time_normalize(self, tz):
-        self.ts.normalize()
 
-    def time_tz_convert(self, tz):
-        if self.ts.tz is not None:
-            self.ts.tz_convert(tz)
+class TimestampAcrossDst(object):
+    goal_time = 0.2
 
-    def time_tz_localize(self, tz):
-        if self.ts.tz is None:
-            self.ts.tz_localize(tz)
-
-    def time_to_julian_date(self, tz):
-        self.ts.to_julian_date()
-
-    def time_floor(self, tz):
-        self.ts.floor('5T')
-
-    def time_ceil(self, tz):
-        self.ts.ceil('5T')
-
-
-class TimestampAcrossDst:
     def setup(self):
         dt = datetime.datetime(2016, 3, 27, 1)
         self.tzinfo = pytz.timezone('CET').localize(dt, is_dst=False).tzinfo

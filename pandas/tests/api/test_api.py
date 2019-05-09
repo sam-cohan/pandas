@@ -1,16 +1,21 @@
+# -*- coding: utf-8 -*-
+import sys
+from warnings import catch_warnings
+
+import pytest
 import pandas as pd
 from pandas import api
 from pandas.util import testing as tm
 
 
-class Base:
+class Base(object):
 
     def check(self, namespace, expected, ignored=None):
         # see which names are in the namespace, minus optional
         # ignored ones
         # compare vs the expected
 
-        result = sorted(f for f in dir(namespace) if not f.startswith('__'))
+        result = sorted([f for f in dir(namespace) if not f.startswith('_')])
         if ignored is not None:
             result = sorted(list(set(result) - set(ignored)))
 
@@ -25,12 +30,12 @@ class TestPDApi(Base):
     ignored = ['tests', 'locale', 'conftest']
 
     # top-level sub-packages
-    lib = ['api', 'arrays', 'compat', 'core', 'errors', 'pandas',
-           'plotting', 'test', 'testing', 'tseries',
+    lib = ['api', 'compat', 'core', 'errors', 'pandas',
+           'plotting', 'test', 'testing', 'tools', 'tseries',
            'util', 'options', 'io']
 
     # these are already deprecated; awaiting removal
-    deprecated_modules = []
+    deprecated_modules = ['datetools', 'parser', 'json', 'lib', 'tslib']
 
     # misc
     misc = ['IndexSlice', 'NaT']
@@ -40,26 +45,21 @@ class TestPDApi(Base):
                'DatetimeIndex', 'ExcelFile', 'ExcelWriter', 'Float64Index',
                'Grouper', 'HDFStore', 'Index', 'Int64Index', 'MultiIndex',
                'Period', 'PeriodIndex', 'RangeIndex', 'UInt64Index',
-               'Series', 'SparseArray', 'SparseDataFrame', 'SparseDtype',
+               'Series', 'SparseArray', 'SparseDataFrame',
                'SparseSeries', 'Timedelta',
-               'TimedeltaIndex', 'Timestamp', 'Interval', 'IntervalIndex',
-               'CategoricalDtype', 'PeriodDtype', 'IntervalDtype',
-               'DatetimeTZDtype',
-               'Int8Dtype', 'Int16Dtype', 'Int32Dtype', 'Int64Dtype',
-               'UInt8Dtype', 'UInt16Dtype', 'UInt32Dtype', 'UInt64Dtype',
-               ]
+               'TimedeltaIndex', 'Timestamp', 'Interval', 'IntervalIndex']
 
     # these are already deprecated; awaiting removal
-    deprecated_classes = ['TimeGrouper', 'Panel']
+    deprecated_classes = ['WidePanel', 'TimeGrouper', 'Expr', 'Term']
 
     # these should be deprecated in the future
-    deprecated_classes_in_future = []
+    deprecated_classes_in_future = ['Panel']
 
     # external modules exposed in pandas namespace
     modules = ['np', 'datetime']
 
     # top-level functions
-    funcs = ['array', 'bdate_range', 'concat', 'crosstab', 'cut',
+    funcs = ['bdate_range', 'concat', 'crosstab', 'cut',
              'date_range', 'interval_range', 'eval',
              'factorize', 'get_dummies',
              'infer_freq', 'isna', 'isnull', 'lreshape',
@@ -90,13 +90,8 @@ class TestPDApi(Base):
     deprecated_funcs_in_future = []
 
     # these are already deprecated; awaiting removal
-    deprecated_funcs = []
-
-    # private modules in pandas namespace
-    private_modules = ['_config', '_hashtable', '_lib', '_libs',
-                       '_np_version_under1p14', '_np_version_under1p15',
-                       '_np_version_under1p16', '_np_version_under1p17',
-                       '_tslib', '_typing', '_version']
+    deprecated_funcs = ['pnow', 'match', 'groupby', 'get_store',
+                        'plot_params', 'scatter_matrix']
 
     def test_api(self):
 
@@ -108,7 +103,7 @@ class TestPDApi(Base):
                    self.funcs + self.funcs_option +
                    self.funcs_read + self.funcs_to +
                    self.deprecated_funcs_in_future +
-                   self.deprecated_funcs + self.private_modules,
+                   self.deprecated_funcs,
                    self.ignored)
 
 
@@ -132,18 +127,108 @@ class TestTesting(Base):
         self.check(testing, self.funcs)
 
 
-class TestTopLevelDeprecations:
+class TestDatetoolsDeprecation(object):
+
+    def test_deprecation_access_func(self):
+        with tm.assert_produces_warning(FutureWarning,
+                                        check_stacklevel=False):
+            pd.datetools.to_datetime('2016-01-01')
+
+    def test_deprecation_access_obj(self):
+        with tm.assert_produces_warning(FutureWarning,
+                                        check_stacklevel=False):
+            pd.datetools.monthEnd
+
+
+class TestTopLevelDeprecations(object):
 
     # top-level API deprecations
     # GH 13790
+
+    def test_pnow(self):
+        with tm.assert_produces_warning(FutureWarning,
+                                        check_stacklevel=False):
+            pd.pnow(freq='M')
+
+    def test_term(self):
+        with tm.assert_produces_warning(FutureWarning,
+                                        check_stacklevel=False):
+            pd.Term('index>=date')
+
+    def test_expr(self):
+        with tm.assert_produces_warning(FutureWarning,
+                                        check_stacklevel=False):
+            pd.Expr('2>1')
+
+    def test_match(self):
+        with tm.assert_produces_warning(FutureWarning,
+                                        check_stacklevel=False):
+            pd.match([1, 2, 3], [1])
+
+    def test_groupby(self):
+        with tm.assert_produces_warning(FutureWarning,
+                                        check_stacklevel=False):
+            pd.groupby(pd.Series([1, 2, 3]), [1, 1, 1])
 
     def test_TimeGrouper(self):
         with tm.assert_produces_warning(FutureWarning,
                                         check_stacklevel=False):
             pd.TimeGrouper(freq='D')
 
+    # GH 15940
 
-class TestCDateRange:
+    def test_get_store(self):
+        pytest.importorskip('tables')
+        with tm.ensure_clean() as path:
+            with tm.assert_produces_warning(FutureWarning,
+                                            check_stacklevel=False):
+                s = pd.get_store(path)
+                s.close()
+
+
+class TestJson(object):
+
+    def test_deprecation_access_func(self):
+        with catch_warnings(record=True):
+            pd.json.dumps([])
+
+
+class TestParser(object):
+
+    def test_deprecation_access_func(self):
+        with catch_warnings(record=True):
+            pd.parser.na_values
+
+
+class TestLib(object):
+
+    def test_deprecation_access_func(self):
+        with catch_warnings(record=True):
+            pd.lib.infer_dtype('foo')
+
+
+class TestTSLib(object):
+
+    def test_deprecation_access_func(self):
+        with catch_warnings(record=True):
+            pd.tslib.Timestamp('20160101')
+
+
+class TestTypes(object):
+
+    def test_deprecation_access_func(self):
+        with tm.assert_produces_warning(
+                FutureWarning, check_stacklevel=False):
+            from pandas.types.concat import union_categoricals
+            c1 = pd.Categorical(list('aabc'))
+            c2 = pd.Categorical(list('abcd'))
+            union_categoricals(
+                [c1, c2],
+                sort_categories=True,
+                ignore_order=True)
+
+
+class TestCDateRange(object):
 
     def test_deprecation_cdaterange(self):
         # GH17596
@@ -151,3 +236,18 @@ class TestCDateRange:
         with tm.assert_produces_warning(FutureWarning,
                                         check_stacklevel=False):
             cdate_range('2017-01-01', '2017-12-31')
+
+
+class TestCategoricalMove(object):
+
+    def test_categorical_move(self):
+        # May have been cached by another import, e.g. pickle tests.
+        sys.modules.pop("pandas.core.categorical", None)
+
+        with tm.assert_produces_warning(FutureWarning):
+            from pandas.core.categorical import Categorical  # noqa
+
+        sys.modules.pop("pandas.core.categorical", None)
+
+        with tm.assert_produces_warning(FutureWarning):
+            from pandas.core.categorical import CategoricalDtype  # noqa

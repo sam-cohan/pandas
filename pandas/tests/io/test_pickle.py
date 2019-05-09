@@ -1,3 +1,5 @@
+# pylint: disable=E1101,E1103,W0232
+
 """
 manage legacy pickle tests
 
@@ -10,26 +12,21 @@ $ python generate_legacy_storage_files.py <output_dir> pickle
 
 3. Move the created pickle to "data/legacy_pickle/<version>" directory.
 """
-import bz2
-from distutils.version import LooseVersion
-import glob
-import gzip
-import lzma
-import os
-import pickle
-import shutil
-from warnings import catch_warnings, simplefilter
-import zipfile
 
 import pytest
+from warnings import catch_warnings
 
-from pandas.compat import is_platform_little_endian
-
+import os
+from distutils.version import LooseVersion
 import pandas as pd
 from pandas import Index
+from pandas.compat import is_platform_little_endian
+import pandas
 import pandas.util.testing as tm
-
+import pandas.util._test_decorators as td
 from pandas.tseries.offsets import Day, MonthEnd
+import shutil
+import sys
 
 
 @pytest.fixture(scope='module')
@@ -65,14 +62,18 @@ def compare_element(result, expected, typ, version=None):
 
 def compare(data, vf, version):
 
-    data = pd.read_pickle(vf)
+    # py3 compat when reading py2 pickle
+    try:
+        data = pandas.read_pickle(vf)
+    except (ValueError) as e:
+        if 'unsupported pickle protocol:' in str(e):
+            # trying to read a py3 pickle in py2
+            return
+        else:
+            raise
 
     m = globals()
     for typ, dv in data.items():
-        if typ == "panel":
-            # FIXME: kludge; get this key out of the legacy file
-            continue
-
         for dt, result in dv.items():
             try:
                 expected = data[typ][dt]
@@ -111,13 +112,13 @@ def compare_series_ts(result, expected, typ, version):
     freq = result.index.freq
     assert freq + Day(1) == Day(2)
 
-    res = freq + pd.Timedelta(hours=1)
-    assert isinstance(res, pd.Timedelta)
-    assert res == pd.Timedelta(days=1, hours=1)
+    res = freq + pandas.Timedelta(hours=1)
+    assert isinstance(res, pandas.Timedelta)
+    assert res == pandas.Timedelta(days=1, hours=1)
 
-    res = freq + pd.Timedelta(nanoseconds=1)
-    assert isinstance(res, pd.Timedelta)
-    assert res == pd.Timedelta(days=1, nanoseconds=1)
+    res = freq + pandas.Timedelta(nanoseconds=1)
+    assert isinstance(res, pandas.Timedelta)
+    assert res == pandas.Timedelta(days=1, nanoseconds=1)
 
 
 def compare_series_dt_tz(result, expected, typ, version):
@@ -184,44 +185,62 @@ def compare_sp_frame_float(result, expected, typ, version):
         tm.assert_sp_frame_equal(result, expected)
 
 
-files = glob.glob(os.path.join(os.path.dirname(__file__), "data",
-                  "legacy_pickle", "*", "*.pickle"))
-
-
-@pytest.fixture(params=files)
-def legacy_pickle(request, datapath):
-    return datapath(request.param)
-
-
 # ---------------------
 # tests
 # ---------------------
-def test_pickles(current_pickle_data, legacy_pickle):
+def legacy_pickle_versions():
+    # yield the pickle versions
+    path = tm.get_data_path('legacy_pickle')
+    for v in os.listdir(path):
+        p = os.path.join(path, v)
+        if os.path.isdir(p):
+            for f in os.listdir(p):
+                yield (v, f)
+
+
+@pytest.mark.parametrize('version, f', legacy_pickle_versions())
+def test_pickles(current_pickle_data, version, f):
     if not is_platform_little_endian():
         pytest.skip("known failure on non-little endian")
 
-    version = os.path.basename(os.path.dirname(legacy_pickle))
+    vf = tm.get_data_path('legacy_pickle/{}/{}'.format(version, f))
     with catch_warnings(record=True):
-        simplefilter("ignore")
-        compare(current_pickle_data, legacy_pickle, version)
+        compare(current_pickle_data, vf, version)
 
 
 def test_round_trip_current(current_pickle_data):
 
+    try:
+        import cPickle as c_pickle
+
+        def c_pickler(obj, path):
+            with open(path, 'wb') as fh:
+                c_pickle.dump(obj, fh, protocol=-1)
+
+        def c_unpickler(path):
+            with open(path, 'rb') as fh:
+                fh.seek(0)
+                return c_pickle.load(fh)
+    except:
+        c_pickler = None
+        c_unpickler = None
+
+    import pickle as python_pickle
+
     def python_pickler(obj, path):
         with open(path, 'wb') as fh:
-            pickle.dump(obj, fh, protocol=-1)
+            python_pickle.dump(obj, fh, protocol=-1)
 
     def python_unpickler(path):
         with open(path, 'rb') as fh:
             fh.seek(0)
-            return pickle.load(fh)
+            return python_pickle.load(fh)
 
     data = current_pickle_data
     for typ, dv in data.items():
         for dt, expected in dv.items():
 
-            for writer in [pd.to_pickle, python_pickler]:
+            for writer in [pd.to_pickle, c_pickler, python_pickler]:
                 if writer is None:
                     continue
 
@@ -234,15 +253,20 @@ def test_round_trip_current(current_pickle_data):
                     result = pd.read_pickle(path)
                     compare_element(result, expected, typ)
 
+                    if c_unpickler is not None:
+                        result = c_unpickler(path)
+                        compare_element(result, expected, typ)
+
                     result = python_unpickler(path)
                     compare_element(result, expected, typ)
 
 
-def test_pickle_v0_14_1(datapath):
+def test_pickle_v0_14_1():
 
     cat = pd.Categorical(values=['a', 'b', 'c'], ordered=False,
                          categories=['a', 'b', 'c', 'd'])
-    pickle_path = datapath('io', 'data', 'categorical_0_14_1.pickle')
+    pickle_path = os.path.join(tm.get_data_path(),
+                               'categorical_0_14_1.pickle')
     # This code was executed once on v0.14.1 to generate the pickle:
     #
     # cat = Categorical(labels=np.arange(3), levels=['a', 'b', 'c', 'd'],
@@ -252,13 +276,14 @@ def test_pickle_v0_14_1(datapath):
     tm.assert_categorical_equal(cat, pd.read_pickle(pickle_path))
 
 
-def test_pickle_v0_15_2(datapath):
+def test_pickle_v0_15_2():
     # ordered -> _ordered
     # GH 9347
 
     cat = pd.Categorical(values=['a', 'b', 'c'], ordered=False,
                          categories=['a', 'b', 'c', 'd'])
-    pickle_path = datapath('io', 'data', 'categorical_0_15_2.pickle')
+    pickle_path = os.path.join(tm.get_data_path(),
+                               'categorical_0_15_2.pickle')
     # This code was executed once on v0.15.2 to generate the pickle:
     #
     # cat = Categorical(labels=np.arange(3), levels=['a', 'b', 'c', 'd'],
@@ -286,10 +311,10 @@ def test_pickle_path_localpath():
 
 @pytest.fixture
 def get_random_path():
-    return '__%s__.pickle' % tm.rands(10)
+    return u'__%s__.pickle' % tm.rands(10)
 
 
-class TestCompression:
+class TestCompression(object):
 
     _compression_to_extension = {
         None: ".none",
@@ -305,24 +330,29 @@ class TestCompression:
             return
 
         if compression == 'gzip':
+            import gzip
             f = gzip.open(dest_path, "w")
         elif compression == 'bz2':
+            import bz2
             f = bz2.BZ2File(dest_path, "w")
         elif compression == 'zip':
-            with zipfile.ZipFile(dest_path, "w",
-                                 compression=zipfile.ZIP_DEFLATED) as f:
-                f.write(src_path, os.path.basename(src_path))
+            import zipfile
+            zip_file = zipfile.ZipFile(dest_path, "w",
+                                       compression=zipfile.ZIP_DEFLATED)
+            zip_file.write(src_path, os.path.basename(src_path))
         elif compression == 'xz':
+            lzma = pandas.compat.import_lzma()
             f = lzma.LZMAFile(dest_path, "w")
         else:
             msg = 'Unrecognized compression type: {}'.format(compression)
             raise ValueError(msg)
 
         if compression != "zip":
-            with open(src_path, "rb") as fh, f:
+            with open(src_path, "rb") as fh:
                 f.write(fh.read())
+            f.close()
 
-    def test_write_explicit(self, compression, get_random_path):
+    def test_write_explicit(self, compression_no_zip, get_random_path):
         base = get_random_path
         path1 = base + ".compressed"
         path2 = base + ".raw"
@@ -331,10 +361,10 @@ class TestCompression:
             df = tm.makeDataFrame()
 
             # write to compressed file
-            df.to_pickle(p1, compression=compression)
+            df.to_pickle(p1, compression=compression_no_zip)
 
             # decompress
-            with tm.decompress_file(p1, compression=compression) as f:
+            with tm.decompress_file(p1, compression=compression_no_zip) as f:
                 with open(p2, "wb") as fh:
                     fh.write(f.read())
 
@@ -345,12 +375,16 @@ class TestCompression:
 
     @pytest.mark.parametrize('compression', ['', 'None', 'bad', '7z'])
     def test_write_explicit_bad(self, compression, get_random_path):
-        with pytest.raises(ValueError, match="Unrecognized compression type"):
+        with tm.assert_raises_regex(ValueError,
+                                    "Unrecognized compression type"):
             with tm.ensure_clean(get_random_path) as path:
                 df = tm.makeDataFrame()
                 df.to_pickle(path, compression=compression)
 
-    @pytest.mark.parametrize('ext', ['', '.gz', '.bz2', '.no_compress', '.xz'])
+    @pytest.mark.parametrize('ext', [
+        '', '.gz', '.bz2', '.no_compress',
+        pytest.param('.xz', marks=td.skip_if_no_lzma)
+    ])
     def test_write_infer(self, ext, get_random_path):
         base = get_random_path
         path1 = base + ext
@@ -397,7 +431,9 @@ class TestCompression:
             tm.assert_frame_equal(df, df2)
 
     @pytest.mark.parametrize('ext', [
-        '', '.gz', '.bz2', '.zip', '.no_compress', '.xz'])
+        '', '.gz', '.bz2', '.zip', '.no_compress',
+        pytest.param('.xz', marks=td.skip_if_no_lzma)
+    ])
     def test_read_infer(self, ext, get_random_path):
         base = get_random_path
         path1 = base + ".raw"
@@ -427,7 +463,7 @@ class TestCompression:
 # test pickle compression
 # ---------------------
 
-class TestProtocol:
+class TestProtocol(object):
 
     @pytest.mark.parametrize('protocol', [-1, 0, 1, 2])
     def test_read(self, protocol, get_random_path):
@@ -436,3 +472,23 @@ class TestProtocol:
             df.to_pickle(path, protocol=protocol)
             df2 = pd.read_pickle(path)
             tm.assert_frame_equal(df, df2)
+
+    @pytest.mark.parametrize('protocol', [3, 4])
+    @pytest.mark.skipif(sys.version_info[:2] >= (3, 4),
+                        reason="Testing invalid parameters for "
+                               "Python 2.x and 3.y (y < 4).")
+    def test_read_bad_versions(self, protocol, get_random_path):
+        # For Python 2.x (respectively 3.y with y < 4), [expected]
+        # HIGHEST_PROTOCOL should be 2 (respectively 3). Hence, the protocol
+        # parameter should not exceed 2 (respectively 3).
+        if sys.version_info[:2] < (3, 0):
+            expect_hp = 2
+        else:
+            expect_hp = 3
+        with tm.assert_raises_regex(ValueError,
+                                    "pickle protocol %d asked for; the highest"
+                                    " available protocol is %d" % (protocol,
+                                                                   expect_hp)):
+            with tm.ensure_clean(get_random_path) as path:
+                df = tm.makeDataFrame()
+                df.to_pickle(path, protocol=protocol)

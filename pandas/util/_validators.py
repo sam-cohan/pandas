@@ -59,7 +59,7 @@ def _check_for_default_values(fname, arg_val_dict, compat_args):
 
         # could not compare them directly, so try comparison
         # using the 'is' operator
-        except ValueError:
+        except:
             match = (arg_val_dict[key] is compat_args[key])
 
         if not match:
@@ -196,8 +196,8 @@ def validate_args_and_kwargs(fname, args, kwargs,
 
     See Also
     --------
-    validate_args : Purely args validation.
-    validate_kwargs : Purely kwargs validation.
+    validate_args : purely args validation
+    validate_kwargs : purely kwargs validation
 
     """
     # Check that the total number of arguments passed in (i.e.
@@ -236,8 +236,8 @@ def validate_axis_style_args(data, args, kwargs, arg_name, method_name):
 
     Parameters
     ----------
-    data : DataFrame
-    args : tuple
+    data : DataFrame or Panel
+    arg : tuple
         All positional arguments from the user
     kwargs : dict
         All keyword arguments from the user
@@ -261,7 +261,7 @@ def validate_axis_style_args(data, args, kwargs, arg_name, method_name):
     ...                              'mapper', 'rename')
     {'columns': <function id>, 'index': <method 'upper' of 'str' objects>}
     """
-    # TODO: Change to keyword-only args and remove all this
+    # TODO(PY3): Change to keyword-only args and remove all this
 
     out = {}
     # Goal: fill 'out' with index/columns-style arguments
@@ -320,39 +320,3 @@ def validate_axis_style_args(data, args, kwargs, arg_name, method_name):
         msg = "Cannot specify all of '{}', 'index', 'columns'."
         raise TypeError(msg.format(arg_name))
     return out
-
-
-def validate_fillna_kwargs(value, method, validate_scalar_dict_value=True):
-    """Validate the keyword arguments to 'fillna'.
-
-    This checks that exactly one of 'value' and 'method' is specified.
-    If 'method' is specified, this validates that it's a valid method.
-
-    Parameters
-    ----------
-    value, method : object
-        The 'value' and 'method' keyword arguments for 'fillna'.
-    validate_scalar_dict_value : bool, default True
-        Whether to validate that 'value' is a scalar or dict. Specifically,
-        validate that it is not a list or tuple.
-
-    Returns
-    -------
-    value, method : object
-    """
-    from pandas.core.missing import clean_fill_method
-
-    if value is None and method is None:
-        raise ValueError("Must specify a fill 'value' or 'method'.")
-    elif value is None and method is not None:
-        method = clean_fill_method(method)
-
-    elif value is not None and method is None:
-        if validate_scalar_dict_value and isinstance(value, (list, tuple)):
-            raise TypeError('"value" parameter must be a scalar or dict, but '
-                            'you passed a "{0}"'.format(type(value).__name__))
-
-    elif value is not None and method is not None:
-        raise ValueError("Cannot specify both 'value' and 'method'.")
-
-    return value, method

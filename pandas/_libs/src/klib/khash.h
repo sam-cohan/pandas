@@ -112,7 +112,6 @@ int main() {
 #include <stdlib.h>
 #include <string.h>
 #include <limits.h>
-#include "../inline_helper.h"
 
 
 #if UINT_MAX == 0xffffffffu
@@ -130,6 +129,18 @@ typedef signed long long khint64_t;
 #endif
 
 typedef double khfloat64_t;
+
+#ifndef PANDAS_INLINE
+  #if defined(__GNUC__)
+    #define PANDAS_INLINE static __inline__
+  #elif defined(_MSC_VER)
+    #define PANDAS_INLINE static __inline
+  #elif defined (__STDC_VERSION__) && __STDC_VERSION__ >= 199901L
+    #define PANDAS_INLINE static inline
+  #else
+    #define PANDAS_INLINE
+  #endif
+#endif
 
 typedef khint32_t khint_t;
 typedef khint_t khiter_t;

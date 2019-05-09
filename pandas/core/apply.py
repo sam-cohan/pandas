@@ -1,14 +1,12 @@
-import inspect
 import warnings
-
 import numpy as np
-
+from pandas import compat
 from pandas._libs import reduction
-from pandas.util._decorators import cache_readonly
-
-from pandas.core.dtypes.common import (
-    is_dict_like, is_extension_type, is_list_like, is_sequence)
 from pandas.core.dtypes.generic import ABCSeries
+from pandas.core.dtypes.common import (
+    is_extension_type,
+    is_sequence)
+from pandas.util._decorators import cache_readonly
 
 from pandas.io.formats.printing import pprint_thing
 
@@ -31,7 +29,7 @@ def frame_apply(obj, func, axis=0, broadcast=None,
                  args=args, kwds=kwds)
 
 
-class FrameApply:
+class FrameApply(object):
 
     def __init__(self, obj, func, broadcast, raw, reduce, result_type,
                  ignore_failures, args, kwds):
@@ -71,8 +69,7 @@ class FrameApply:
         self.result_type = result_type
 
         # curry if needed
-        if (kwds or args) and not isinstance(func, (np.ufunc, str)):
-
+        if kwds or args and not isinstance(func, np.ufunc):
             def f(x):
                 return func(x, *args, **kwds)
         else:
@@ -108,30 +105,19 @@ class FrameApply:
     def get_result(self):
         """ compute the results """
 
-        # dispatch to agg
-        if is_list_like(self.f) or is_dict_like(self.f):
-            return self.obj.aggregate(self.f, axis=self.axis,
-                                      *self.args, **self.kwds)
-
         # all empty
         if len(self.columns) == 0 and len(self.index) == 0:
             return self.apply_empty_result()
 
         # string dispatch
-        if isinstance(self.f, str):
-            # Support for `frame.transform('method')`
-            # Some methods (shift, etc.) require the axis argument, others
-            # don't, so inspect and insert if necessary.
-            func = getattr(self.obj, self.f)
-            sig = inspect.getfullargspec(func)
-            if 'axis' in sig.args:
-                self.kwds['axis'] = self.axis
-            return func(*self.args, **self.kwds)
+        if isinstance(self.f, compat.string_types):
+            self.kwds['axis'] = self.axis
+            return getattr(self.obj, self.f)(*self.args, **self.kwds)
 
         # ufunc
         elif isinstance(self.f, np.ufunc):
             with np.errstate(all='ignore'):
-                results = self.obj._data.apply('apply', func=self.f)
+                results = self.f(self.values)
             return self.obj._constructor(data=results, index=self.index,
                                          columns=self.columns, copy=False)
 
@@ -176,7 +162,7 @@ class FrameApply:
                 pass
 
         if reduce:
-            return self.obj._constructor_sliced(np.nan, index=self.agg_axis)
+            return Series(np.nan, index=self.agg_axis)
         else:
             return self.obj.copy()
 
@@ -189,13 +175,11 @@ class FrameApply:
             result = np.apply_along_axis(self.f, self.axis, self.values)
 
         # TODO: mixed type case
+        from pandas import DataFrame, Series
         if result.ndim == 2:
-            return self.obj._constructor(result,
-                                         index=self.index,
-                                         columns=self.columns)
+            return DataFrame(result, index=self.index, columns=self.columns)
         else:
-            return self.obj._constructor_sliced(result,
-                                                index=self.agg_axis)
+            return Series(result, index=self.agg_axis)
 
     def apply_broadcast(self, target):
         result_values = np.empty_like(target.values)
@@ -205,7 +189,7 @@ class FrameApply:
 
         for i, col in enumerate(target.columns):
             res = self.f(target[col])
-            ares = np.asarray(res).ndim
+            ares = np. asarray(res).ndim
 
             # must be a scalar or 1d
             if ares > 1:
@@ -248,7 +232,7 @@ class FrameApply:
                                           axis=self.axis,
                                           dummy=dummy,
                                           labels=labels)
-                return self.obj._constructor_sliced(result, index=labels)
+                return Series(result, index=labels)
             except Exception:
                 pass
 
@@ -307,7 +291,8 @@ class FrameApply:
             return self.wrap_results_for_axis()
 
         # dict of scalars
-        result = self.obj._constructor_sliced(results)
+        from pandas import Series
+        result = Series(results)
         result.index = self.res_index
 
         return result
@@ -316,8 +301,17 @@ class FrameApply:
 class FrameRowApply(FrameApply):
     axis = 0
 
+    def get_result(self):
+
+        # dispatch to agg
+        if isinstance(self.f, (list, dict)):
+            return self.obj.aggregate(self.f, axis=self.axis,
+                                      *self.args, **self.kwds)
+
+        return super(FrameRowApply, self).get_result()
+
     def apply_broadcast(self):
-        return super().apply_broadcast(self.obj)
+        return super(FrameRowApply, self).apply_broadcast(self.obj)
 
     @property
     def series_generator(self):
@@ -356,7 +350,7 @@ class FrameColumnApply(FrameApply):
     axis = 1
 
     def apply_broadcast(self):
-        result = super().apply_broadcast(self.obj.T)
+        result = super(FrameColumnApply, self).apply_broadcast(self.obj.T)
         return result.T
 
     @property
@@ -385,6 +379,7 @@ class FrameColumnApply(FrameApply):
         # we have a non-series and don't want inference
         elif not isinstance(results[0], ABCSeries):
             from pandas import Series
+
             result = Series(results)
             result.index = self.res_index
 

@@ -1,17 +1,13 @@
+# -*- coding: utf-8 -*-
 """
 Testing that we work in the downstream packages
 """
-import importlib
-import subprocess
-import sys
-
-import numpy as np  # noqa
 import pytest
-
-from pandas.compat import PY36
-
+import numpy as np  # noqa
 from pandas import DataFrame
+from pandas.compat import PY36
 from pandas.util import testing as tm
+import importlib
 
 
 def import_module(name):
@@ -57,14 +53,7 @@ def test_xarray(df):
     assert df.to_xarray() is not None
 
 
-def test_oo_optimizable():
-    # GH 21071
-    subprocess.check_call([sys.executable, "-OO", "-c", "import pandas"])
-
-
 @tm.network
-# Cython import warning
-@pytest.mark.filterwarnings("ignore:can't:ImportWarning")
 def test_statsmodels():
 
     statsmodels = import_module('statsmodels')  # noqa
@@ -74,8 +63,6 @@ def test_statsmodels():
     smf.ols('Lottery ~ Literacy + np.log(Pop1831)', data=df).fit()
 
 
-# Cython import warning
-@pytest.mark.filterwarnings("ignore:can't:ImportWarning")
 def test_scikit_learn(df):
 
     sklearn = import_module('sklearn')  # noqa
@@ -87,9 +74,7 @@ def test_scikit_learn(df):
     clf.predict(digits.data[-1:])
 
 
-# Cython import warning and traitlets
 @tm.network
-@pytest.mark.filterwarnings("ignore")
 def test_seaborn():
 
     seaborn = import_module('seaborn')
@@ -102,7 +87,6 @@ def test_pandas_gbq(df):
     pandas_gbq = import_module('pandas_gbq')  # noqa
 
 
-@pytest.mark.xfail(reason="0.7.0 pending")
 @tm.network
 def test_pandas_datareader():
 
@@ -111,11 +95,6 @@ def test_pandas_datareader():
         'F', 'quandl', '2017-01-01', '2017-02-01')
 
 
-# importing from pandas, Cython import warning
-@pytest.mark.filterwarnings("ignore:The 'warn':DeprecationWarning")
-@pytest.mark.filterwarnings("ignore:pandas.util:DeprecationWarning")
-@pytest.mark.filterwarnings("ignore:can't resolve:ImportWarning")
-@pytest.mark.skip(reason="gh-25778: geopandas stack issue")
 def test_geopandas():
 
     geopandas = import_module('geopandas')  # noqa
@@ -123,8 +102,6 @@ def test_geopandas():
     assert geopandas.read_file(fp) is not None
 
 
-# Cython import warning
-@pytest.mark.filterwarnings("ignore:can't resolve:ImportWarning")
 def test_pyarrow(df):
 
     pyarrow = import_module('pyarrow')  # noqa

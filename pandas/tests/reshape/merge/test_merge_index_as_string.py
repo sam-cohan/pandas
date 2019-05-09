@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 
 from pandas import DataFrame
+from pandas.util import testing as tm
 from pandas.util.testing import assert_frame_equal
 
 
@@ -156,7 +157,9 @@ def test_merge_indexes_and_columns_lefton_righton(
 
 @pytest.mark.parametrize('left_index',
                          ['inner', ['inner', 'outer']])
-def test_join_indexes_and_columns_on(df1, df2, left_index, join_type):
+@pytest.mark.parametrize('how',
+                         ['inner', 'left', 'right', 'outer'])
+def test_join_indexes_and_columns_on(df1, df2, left_index, how):
 
     # Construct left_df
     left_df = df1.set_index(left_index)
@@ -166,12 +169,47 @@ def test_join_indexes_and_columns_on(df1, df2, left_index, join_type):
 
     # Result
     expected = (left_df.reset_index()
-                .join(right_df, on=['outer', 'inner'], how=join_type,
+                .join(right_df, on=['outer', 'inner'], how=how,
                       lsuffix='_x', rsuffix='_y')
                 .set_index(left_index))
 
     # Perform join
-    result = left_df.join(right_df, on=['outer', 'inner'], how=join_type,
+    result = left_df.join(right_df, on=['outer', 'inner'], how=how,
                           lsuffix='_x', rsuffix='_y')
 
     assert_frame_equal(result, expected, check_like=True)
+
+
+def test_merge_index_column_precedence(df1, df2):
+
+    # Construct left_df with both an index and a column named 'outer'.
+    # We make this 'outer' column equal to the 'inner' column so that we
+    # can verify that the correct values are used by the merge operation
+    left_df = df1.set_index('outer')
+    left_df['outer'] = left_df['inner']
+
+    # Construct right_df with an index level named 'outer'
+    right_df = df2.set_index('outer')
+
+    # Construct expected result.
+    # The 'outer' column from left_df is chosen and the resulting
+    # frame has no index levels
+    expected = (left_df.reset_index(level='outer', drop=True)
+                .merge(right_df.reset_index(), on=['outer', 'inner']))
+
+    # Merge left_df and right_df on 'outer' and 'inner'
+    #  'outer' for left_df should refer to the 'outer' column, not the
+    #  'outer' index level and a FutureWarning should be raised
+    with tm.assert_produces_warning(FutureWarning):
+        result = left_df.merge(right_df, on=['outer', 'inner'])
+
+    # Check results
+    assert_frame_equal(result, expected)
+
+    # Perform the same using the left_on and right_on parameters
+    with tm.assert_produces_warning(FutureWarning):
+        result = left_df.merge(right_df,
+                               left_on=['outer', 'inner'],
+                               right_on=['outer', 'inner'])
+
+    assert_frame_equal(result, expected)

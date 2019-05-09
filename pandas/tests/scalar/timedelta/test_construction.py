@@ -1,9 +1,12 @@
+# -*- coding: utf-8 -*-
 from datetime import timedelta
 
-import numpy as np
 import pytest
+import numpy as np
 
-from pandas import Timedelta, offsets, to_timedelta
+import pandas as pd
+import pandas.util.testing as tm
+from pandas import Timedelta
 
 
 def test_construction():
@@ -87,16 +90,15 @@ def test_construction():
         Timedelta('3.1415')
 
     # invalid construction
-    with pytest.raises(ValueError, match="cannot construct a Timedelta"):
-        Timedelta()
-
-    with pytest.raises(ValueError, match="unit abbreviation w/o a number"):
-        Timedelta('foo')
-
-    msg = ("cannot construct a Timedelta from "
-           "the passed arguments, allowed keywords are ")
-    with pytest.raises(ValueError, match=msg):
-        Timedelta(day=10)
+    tm.assert_raises_regex(ValueError, "cannot construct a Timedelta",
+                           lambda: Timedelta())
+    tm.assert_raises_regex(ValueError,
+                           "unit abbreviation w/o a number",
+                           lambda: Timedelta('foo'))
+    tm.assert_raises_regex(ValueError,
+                           "cannot construct a Timedelta from the "
+                           "passed arguments, allowed keywords are ",
+                           lambda: Timedelta(day=10))
 
     # floats
     expected = np.timedelta64(
@@ -105,18 +107,19 @@ def test_construction():
     assert Timedelta(10.5, unit='s').value == expected
 
     # offset
-    assert to_timedelta(offsets.Hour(2)) == Timedelta(hours=2)
-    assert Timedelta(offsets.Hour(2)) == Timedelta(hours=2)
-    assert Timedelta(offsets.Second(2)) == Timedelta(seconds=2)
+    assert pd.to_timedelta(pd.offsets.Hour(2)) == Timedelta(hours=2)
+    assert Timedelta(pd.offsets.Hour(2)) == Timedelta(hours=2)
+    assert Timedelta(pd.offsets.Second(2)) == Timedelta(seconds=2)
 
     # GH#11995: unicode
     expected = Timedelta('1H')
-    result = Timedelta('1H')
+    result = pd.Timedelta(u'1H')
     assert result == expected
-    assert to_timedelta(offsets.Hour(2)) == Timedelta('0 days, 02:00:00')
+    assert (pd.to_timedelta(pd.offsets.Hour(2)) ==
+            Timedelta(u'0 days, 02:00:00'))
 
     with pytest.raises(ValueError):
-        Timedelta('foo bar')
+        Timedelta(u'foo bar')
 
 
 @pytest.mark.parametrize('item', list({'days': 'D',
@@ -151,17 +154,17 @@ def test_td_from_repr_roundtrip(val):
 
 
 def test_overflow_on_construction():
-    # GH#3374
-    value = Timedelta('1day').value * 20169940
+    # xref https://github.com/statsmodels/statsmodels/issues/3374
+    value = pd.Timedelta('1day').value * 20169940
     with pytest.raises(OverflowError):
-        Timedelta(value)
+        pd.Timedelta(value)
 
     # xref GH#17637
     with pytest.raises(OverflowError):
-        Timedelta(7 * 19999, unit='D')
+        pd.Timedelta(7 * 19999, unit='D')
 
     with pytest.raises(OverflowError):
-        Timedelta(timedelta(days=13 * 19999))
+        pd.Timedelta(timedelta(days=13 * 19999))
 
 
 @pytest.mark.parametrize('fmt,exp', [
@@ -187,23 +190,33 @@ def test_iso_constructor(fmt, exp):
     'P1DT0H0M0.0000000000000S', 'P1DT0H0M00000000000S',
     'P1DT0H0M0.S'])
 def test_iso_constructor_raises(fmt):
-    with pytest.raises(ValueError, match=('Invalid ISO 8601 Duration '
-                                          'format - {}'.format(fmt))):
+    with tm.assert_raises_regex(ValueError, 'Invalid ISO 8601 Duration '
+                                'format - {}'.format(fmt)):
         Timedelta(fmt)
 
 
-@pytest.mark.parametrize('constructed_td, conversion', [
-    (Timedelta(nanoseconds=100), '100ns'),
-    (Timedelta(days=1, hours=1, minutes=1, weeks=1, seconds=1, milliseconds=1,
-               microseconds=1, nanoseconds=1), 694861001001001),
-    (Timedelta(microseconds=1) + Timedelta(nanoseconds=1), '1us1ns'),
-    (Timedelta(microseconds=1) - Timedelta(nanoseconds=1), '999ns'),
-    (Timedelta(microseconds=1) + 5 * Timedelta(nanoseconds=-2), '990ns')])
-def test_td_constructor_on_nanoseconds(constructed_td, conversion):
+def test_td_constructor_on_nanoseconds():
     # GH#9273
-    assert constructed_td == Timedelta(conversion)
+    result = Timedelta(nanoseconds=100)
+    expected = Timedelta('100ns')
+    assert result == expected
 
+    result = Timedelta(days=1, hours=1, minutes=1, weeks=1, seconds=1,
+                       milliseconds=1, microseconds=1, nanoseconds=1)
+    expected = Timedelta(694861001001001)
+    assert result == expected
 
-def test_td_constructor_value_error():
+    result = Timedelta(microseconds=1) + Timedelta(nanoseconds=1)
+    expected = Timedelta('1us1ns')
+    assert result == expected
+
+    result = Timedelta(microseconds=1) - Timedelta(nanoseconds=1)
+    expected = Timedelta('999ns')
+    assert result == expected
+
+    result = Timedelta(microseconds=1) + 5 * Timedelta(nanoseconds=-2)
+    expected = Timedelta('990ns')
+    assert result == expected
+
     with pytest.raises(TypeError):
         Timedelta(nanoseconds='abc')

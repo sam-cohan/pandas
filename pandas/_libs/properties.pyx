@@ -1,23 +1,49 @@
-from cython import Py_ssize_t
+# -*- coding: utf-8 -*-
+
+from cython cimport Py_ssize_t
 
 from cpython cimport (
     PyDict_Contains, PyDict_GetItem, PyDict_SetItem)
 
 
-cdef class CachedProperty:
+cdef class cache_readonly(object):
 
     cdef readonly:
-        object func, name, __doc__
+        object func, name, allow_setting
 
-    def __init__(self, func):
+    def __init__(self, func=None, allow_setting=False):
+        if func is not None:
+            self.func = func
+            self.name = func.__name__
+        self.allow_setting = allow_setting
+
+    def __call__(self, func, doc=None):
         self.func = func
         self.name = func.__name__
-        self.__doc__ = getattr(func, '__doc__', None)
+        return self
 
     def __get__(self, obj, typ):
-        if obj is None:
-            # accessed on the class, not the instance
-            return self
+        # Get the cache or set a default one if needed
+
+        cache = getattr(obj, '_cache', None)
+        if cache is None:
+            try:
+                cache = obj._cache = {}
+            except (AttributeError):
+                return
+
+        if PyDict_Contains(cache, self.name):
+            # not necessary to Py_INCREF
+            val = <object> PyDict_GetItem(cache, self.name)
+        else:
+            val = self.func(obj)
+            PyDict_SetItem(cache, self.name, val)
+        return val
+
+    def __set__(self, obj, value):
+
+        if not self.allow_setting:
+            raise Exception("cannot set values for [%s]" % self.name)
 
         # Get the cache or set a default one if needed
         cache = getattr(obj, '_cache', None)
@@ -25,32 +51,16 @@ cdef class CachedProperty:
             try:
                 cache = obj._cache = {}
             except (AttributeError):
-                return self
+                return
 
-        if PyDict_Contains(cache, self.name):
-            # not necessary to Py_INCREF
-            val = <object>PyDict_GetItem(cache, self.name)
-        else:
-            val = self.func(obj)
-            PyDict_SetItem(cache, self.name, val)
-        return val
+        PyDict_SetItem(cache, self.name, value)
 
-    def __set__(self, obj, value):
-        raise AttributeError("Can't set attribute")
-
-
-cache_readonly = CachedProperty
-
-
-cdef class AxisProperty:
-
-    cdef readonly:
+cdef class AxisProperty(object):
+    cdef:
         Py_ssize_t axis
-        object __doc__
 
-    def __init__(self, axis=0, doc=""):
+    def __init__(self, axis=0):
         self.axis = axis
-        self.__doc__ = doc
 
     def __get__(self, obj, type):
         cdef:
@@ -58,7 +68,7 @@ cdef class AxisProperty:
 
         if obj is None:
             # Only instances have _data, not classes
-            return self
+            return None
         else:
             axes = obj._data.axes
         return axes[self.axis]

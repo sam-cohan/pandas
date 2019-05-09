@@ -1,10 +1,12 @@
+import sys
 import subprocess
-
 from .exceptions import PyperclipException
 
 EXCEPT_MSG = """
     Pyperclip could not find a copy/paste mechanism for your system.
     For more information, please visit https://pyperclip.readthedocs.org """
+PY2 = sys.version_info[0] == 2
+text_type = unicode if PY2 else str  # noqa
 
 
 def init_osx_clipboard():
@@ -33,7 +35,11 @@ def init_gtk_clipboard():
 
     def paste_gtk():
         clipboardContents = gtk.Clipboard().wait_for_text()
-        return clipboardContents
+        # for python 2, returns None if the clipboard is blank.
+        if clipboardContents is None:
+            return ''
+        else:
+            return clipboardContents
 
     return copy_gtk, paste_gtk
 
@@ -60,7 +66,7 @@ def init_qt_clipboard():
 
     def paste_qt():
         cb = app.clipboard()
-        return str(cb.text())
+        return text_type(cb.text())
 
     return copy_qt, paste_qt
 
@@ -124,12 +130,16 @@ def init_klipper_clipboard():
 
 
 def init_no_clipboard():
-    class ClipboardUnavailable:
+    class ClipboardUnavailable(object):
 
         def __call__(self, *args, **kwargs):
             raise PyperclipException(EXCEPT_MSG)
 
-        def __bool__(self):
-            return False
+        if PY2:
+            def __nonzero__(self):
+                return False
+        else:
+            def __bool__(self):
+                return False
 
     return ClipboardUnavailable(), ClipboardUnavailable()

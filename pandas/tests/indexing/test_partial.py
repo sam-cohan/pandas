@@ -4,19 +4,18 @@ test setting *parts* of objects both positionally and label based
 TOD: these should be split among the indexer tests
 """
 
-from warnings import catch_warnings
-
-import numpy as np
 import pytest
 
+from warnings import catch_warnings
+import numpy as np
+
 import pandas as pd
-from pandas import DataFrame, Index, Series, date_range
+from pandas import Series, DataFrame, Panel, Index, date_range
 from pandas.util import testing as tm
 
 
-class TestPartialSetting:
+class TestPartialSetting(object):
 
-    @pytest.mark.filterwarnings("ignore:\\n.ix:DeprecationWarning")
     def test_partial_setting(self):
 
         # GH2578, allow ix and friends to partially set
@@ -47,11 +46,15 @@ class TestPartialSetting:
         # iloc/iat raise
         s = s_orig.copy()
 
-        with pytest.raises(IndexError):
+        def f():
             s.iloc[3] = 5.
 
-        with pytest.raises(IndexError):
+        pytest.raises(IndexError, f)
+
+        def f():
             s.iat[3] = 5.
+
+        pytest.raises(IndexError, f)
 
         # ## frame ##
 
@@ -61,11 +64,15 @@ class TestPartialSetting:
         # iloc/iat raise
         df = df_orig.copy()
 
-        with pytest.raises(IndexError):
+        def f():
             df.iloc[4, 2] = 5.
 
-        with pytest.raises(IndexError):
+        pytest.raises(IndexError, f)
+
+        def f():
             df.iat[4, 2] = 5.
+
+        pytest.raises(IndexError, f)
 
         # row setting where it exists
         expected = DataFrame(dict({'A': [0, 4, 4], 'B': [1, 5, 5]}))
@@ -115,30 +122,57 @@ class TestPartialSetting:
             df.ix[:, 'C'] = df.ix[:, 'A']
         tm.assert_frame_equal(df, expected)
 
+        with catch_warnings(record=True):
+            # ## panel ##
+            p_orig = Panel(np.arange(16).reshape(2, 4, 2),
+                           items=['Item1', 'Item2'],
+                           major_axis=pd.date_range('2001/1/12', periods=4),
+                           minor_axis=['A', 'B'], dtype='float64')
+
+            # panel setting via item
+            p_orig = Panel(np.arange(16).reshape(2, 4, 2),
+                           items=['Item1', 'Item2'],
+                           major_axis=pd.date_range('2001/1/12', periods=4),
+                           minor_axis=['A', 'B'], dtype='float64')
+            expected = p_orig.copy()
+            expected['Item3'] = expected['Item1']
+            p = p_orig.copy()
+            p.loc['Item3'] = p['Item1']
+            tm.assert_panel_equal(p, expected)
+
+            # panel with aligned series
+            expected = p_orig.copy()
+            expected = expected.transpose(2, 1, 0)
+            expected['C'] = DataFrame({'Item1': [30, 30, 30, 30],
+                                       'Item2': [32, 32, 32, 32]},
+                                      index=p_orig.major_axis)
+            expected = expected.transpose(2, 1, 0)
+            p = p_orig.copy()
+            p.loc[:, :, 'C'] = Series([30, 32], index=p_orig.items)
+            tm.assert_panel_equal(p, expected)
+
         # GH 8473
         dates = date_range('1/1/2000', periods=8)
         df_orig = DataFrame(np.random.randn(8, 4), index=dates,
                             columns=['A', 'B', 'C', 'D'])
 
-        expected = pd.concat([df_orig,
-                              DataFrame({'A': 7},
-                                        index=[dates[-1] + dates.freq])],
-                             sort=True)
+        expected = pd.concat([df_orig, DataFrame(
+            {'A': 7}, index=[dates[-1] + 1])])
         df = df_orig.copy()
-        df.loc[dates[-1] + dates.freq, 'A'] = 7
+        df.loc[dates[-1] + 1, 'A'] = 7
         tm.assert_frame_equal(df, expected)
         df = df_orig.copy()
-        df.at[dates[-1] + dates.freq, 'A'] = 7
+        df.at[dates[-1] + 1, 'A'] = 7
         tm.assert_frame_equal(df, expected)
 
-        exp_other = DataFrame({0: 7}, index=[dates[-1] + dates.freq])
+        exp_other = DataFrame({0: 7}, index=[dates[-1] + 1])
         expected = pd.concat([df_orig, exp_other], axis=1)
 
         df = df_orig.copy()
-        df.loc[dates[-1] + dates.freq, 0] = 7
+        df.loc[dates[-1] + 1, 0] = 7
         tm.assert_frame_equal(df, expected)
         df = df_orig.copy()
-        df.at[dates[-1] + dates.freq, 0] = 7
+        df.at[dates[-1] + 1, 0] = 7
         tm.assert_frame_equal(df, expected)
 
     def test_partial_setting_mixed_dtype(self):
@@ -170,8 +204,10 @@ class TestPartialSetting:
         # list-like must conform
         df = DataFrame(columns=['A', 'B'])
 
-        with pytest.raises(ValueError):
+        def f():
             df.loc[0] = [1, 2, 3]
+
+        pytest.raises(ValueError, f)
 
         # TODO: #15657, these are left as object and not coerced
         df = DataFrame(columns=['A', 'B'])
@@ -216,10 +252,7 @@ class TestPartialSetting:
         tm.assert_series_equal(result, expected, check_index_type=True)
 
         # raises as nothing in in the index
-        msg = (r"\"None of \[Int64Index\(\[3, 3, 3\], dtype='int64'\)\] are"
-               r" in the \[index\]\"")
-        with pytest.raises(KeyError, match=msg):
-            ser.loc[[3, 3, 3]]
+        pytest.raises(KeyError, lambda: ser.loc[[3, 3, 3]])
 
         expected = Series([0.2, 0.2, np.nan], index=[2, 2, 3])
         with tm.assert_produces_warning(FutureWarning, check_stacklevel=False):
@@ -315,10 +348,7 @@ class TestPartialSetting:
         tm.assert_series_equal(result, expected, check_index_type=True)
 
         # raises as nothing in in the index
-        msg = (r"\"None of \[Int64Index\(\[3, 3, 3\], dtype='int64',"
-               r" name=u?'idx'\)\] are in the \[index\]\"")
-        with pytest.raises(KeyError, match=msg):
-            ser.loc[[3, 3, 3]]
+        pytest.raises(KeyError, lambda: ser.loc[[3, 3, 3]])
 
         exp_idx = Index([2, 2, 3], dtype='int64', name='idx')
         expected = Series([0.2, 0.2, np.nan], index=exp_idx, name='s')
@@ -373,7 +403,6 @@ class TestPartialSetting:
         result = ser.iloc[[1, 1, 0, 0]]
         tm.assert_series_equal(result, expected, check_index_type=True)
 
-    @pytest.mark.filterwarnings("ignore:\\n.ix")
     def test_partial_set_invalid(self):
 
         # GH 4940
@@ -383,21 +412,29 @@ class TestPartialSetting:
         df = orig.copy()
 
         # don't allow not string inserts
-        with pytest.raises(TypeError):
+        def f():
             with catch_warnings(record=True):
                 df.loc[100.0, :] = df.ix[0]
 
-        with pytest.raises(TypeError):
+        pytest.raises(TypeError, f)
+
+        def f():
             with catch_warnings(record=True):
                 df.loc[100, :] = df.ix[0]
 
-        with pytest.raises(TypeError):
+        pytest.raises(TypeError, f)
+
+        def f():
             with catch_warnings(record=True):
                 df.ix[100.0, :] = df.ix[0]
 
-        with pytest.raises(ValueError):
+        pytest.raises(TypeError, f)
+
+        def f():
             with catch_warnings(record=True):
                 df.ix[100, :] = df.ix[0]
+
+        pytest.raises(ValueError, f)
 
         # allow object conversion here
         df = orig.copy()
@@ -439,14 +476,20 @@ class TestPartialSetting:
         # frame
         df = DataFrame()
 
-        with pytest.raises(ValueError):
+        def f():
             df.loc[1] = 1
 
-        with pytest.raises(ValueError):
+        pytest.raises(ValueError, f)
+
+        def f():
             df.loc[1] = Series([1], index=['foo'])
 
-        with pytest.raises(ValueError):
+        pytest.raises(ValueError, f)
+
+        def f():
             df.loc[:, 1] = 1
+
+        pytest.raises(ValueError, f)
 
         # these work as they don't really change
         # anything but the index

@@ -10,10 +10,13 @@ class CSSWarning(UserWarning):
     pass
 
 
-class CSSResolver:
+class CSSResolver(object):
     """A callable for parsing and resolving CSS to atomic properties
 
     """
+
+    INITIAL_STYLE = {
+    }
 
     def __call__(self, declarations_str, inherited=None):
         """ the given declarations to atomic properties
@@ -66,7 +69,7 @@ class CSSResolver:
             if val == 'inherit':
                 val = inherited.get(prop, 'initial')
             if val == 'initial':
-                val = None
+                val = self.INITIAL_STYLE.get(prop)
 
             if val is None:
                 # we do not define a complete initial stylesheet
